@@ -1,8 +1,6 @@
 package main
 
 import (
-	"debug/elf"
-
 	"github.com/ianlancetaylor/demangle"
 )
 
