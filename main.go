@@ -5,14 +5,11 @@ import (
 	"fmt"
 	"log"
 	"strings"
-
-	"github.com/shawnsmithdev/zermelo"
 )
 
 var (
-	demangleOpt = flag.Bool("demangle", true, "demangle C++ symbols into their original source identifiers, prettify found C++ symbols (optional)")
 	binaryOpt   = flag.String("binary", "", "the path to the ELF you wish to parse")
-	minOpt      = flag.Uint64("min", 0, "the minimum length of the string")
+	demangleOpt = flag.Bool("demangle", true, "demangle C++ symbols into their original source identifiers")
 	trimOpt     = flag.Bool("no-trim", false, "disable triming whitespace and trailing newlines")
 	humanOpt    = flag.Bool("no-human", false, "don't validate that its a human readable string, this could increase the amount of junk.")
 )
@@ -21,7 +18,6 @@ var (
 // it combines all of the modules, etc.
 func ReadSection(reader *ElfReader, section string) {
 	var err error
-	var count uint64
 
 	sect := reader.ReaderParseSection(section)
 
@@ -36,18 +32,10 @@ func ReadSection(reader *ElfReader, section string) {
 			keys = append(keys, k)
 		}
 
-		err = zermelo.Sort(keys)
-		if err != nil {
-			return
-		}
-
 		keys = UtilUniqueSlice(keys)
 
 		for _, off := range keys {
 			str := string(nodes[off])
-			if uint64(len(str)) < *minOpt {
-				continue
-			}
 
 			if !*humanOpt {
 				if !UtilIsNice(str) {
@@ -55,9 +43,8 @@ func ReadSection(reader *ElfReader, section string) {
 				}
 			}
 
-			str = strings.TrimSpace(str)
-
 			if !*trimOpt {
+				str = strings.TrimSpace(str)
 				bad := []string{"\n", "\r"}
 				for _, char := range bad {
 					str = strings.Replace(str, char, "", -1)
@@ -72,8 +59,6 @@ func ReadSection(reader *ElfReader, section string) {
 			}
 
 			fmt.Println(str)
-
-			count++
 		}
 	}
 }
