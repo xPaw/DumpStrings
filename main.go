@@ -11,14 +11,12 @@ var (
 	binaryOpt   = flag.String("binary", "", "the path to the ELF you wish to parse")
 	demangleOpt = flag.Bool("demangle", true, "demangle C++ symbols into their original source identifiers")
 	trimOpt     = flag.Bool("no-trim", false, "disable triming whitespace and trailing newlines")
-	humanOpt    = flag.Bool("no-human", false, "don't validate that its a human readable string, this could increase the amount of junk.")
+	humanOpt    = flag.Bool("no-human", false, "don't validate that its a human readable string, this increases the amount of junk")
 )
 
 // ReadSection is the main logic here
 // it combines all of the modules, etc.
 func ReadSection(reader *ElfReader, section string) {
-	var err error
-
 	sect := reader.ReaderParseSection(section)
 
 	if sect != nil {
