@@ -70,28 +70,13 @@ func (r *ElfReader) ReaderParseSection(name string) []byte {
 // and then place them into an [offset => string] type map
 // alignment does not matter here, as when \x00 exists more than once
 // it will simply be skipped.
-func (r *ElfReader) ReaderParseStrings(buf []byte) map[uint64][]byte {
+func (r *ElfReader) ReaderParseStrings(buf []byte) [][]byte {
 	var slice [][]byte
 	if slice = bytes.Split(buf, []byte("\x00")); slice == nil {
 		return nil
 	}
 
-	strings := make(map[uint64][]byte, len(slice))
-	length := uint64(len(slice))
-
-	var offset uint64
-
-	for i := uint64(0); i < length; i++ {
-		if len(slice[i]) == 0 {
-			continue
-		}
-
-		strings[offset] = slice[i]
-
-		offset += (uint64(len(slice[i])) + 1)
-	}
-
-	return strings
+	return slice
 }
 
 // Close softly close all of the instances associated

@@ -22,18 +22,8 @@ func ReadSection(reader *ElfReader, section string) {
 	if sect != nil {
 		nodes := reader.ReaderParseStrings(sect)
 
-		// Since maps in Go are unsorted, we're going to have to make
-		// a slice of keys, then iterate over this and just use the index
-		// from the map.
-		keys := make([]uint64, len(nodes))
-		for k, _ := range nodes {
-			keys = append(keys, k)
-		}
-
-		keys = UtilUniqueSlice(keys)
-
-		for _, off := range keys {
-			str := string(nodes[off])
+		for _, bytes := range nodes {
+			str := string(bytes)
 
 			if !*humanOpt {
 				if !UtilIsNice(str) {
