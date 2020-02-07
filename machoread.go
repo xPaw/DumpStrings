@@ -2,21 +2,21 @@ package main
 
 import (
 	"bytes"
-	"debug/elf"
+	"debug/macho"
 	"errors"
 	"os"
 )
 
-// ElfReader instance containing information
-// about said ELF binary
-type ElfReader struct {
-	ExecReader *elf.File
+// MachoReader instance containing information
+// about said binary
+type MachoReader struct {
+	ExecReader *macho.File
 	File       *os.File
 }
 
-// NewELFReader will create a new instance of ElfReader
-func NewELFReader(path string) (*ElfReader, error) {
-	var r ElfReader
+// NewMachoReader will create a new instance of MachoReader
+func NewMachoReader(path string) (*MachoReader, error) {
+	var r MachoReader
 	var err error
 
 	r.File, err = os.OpenFile(path, os.O_RDONLY, os.ModePerm)
@@ -24,19 +24,19 @@ func NewELFReader(path string) (*ElfReader, error) {
 		return nil, errors.New("failed to open the file")
 	}
 
-	r.ExecReader, err = elf.NewFile(r.File)
+	r.ExecReader, err = macho.NewFile(r.File)
 	if err != nil {
-		return nil, errors.New("failed to parse the ELF file succesfully")
+		return nil, errors.New("failed to parse the Mach-O file succesfully")
 	}
 
 	return &r, nil
 }
 
-// ReaderParseSection will parse the ELF section and
+// ReaderParseSection will parse the section and
 // return an array of bytes containing the content
 // of the section, using the file instance..
-func (r *ElfReader) ReaderParseSection(name string) []byte {
-	var s *elf.Section
+func (r *MachoReader) ReaderParseSection(name string) []byte {
+	var s *macho.Section
 	if s = r.ExecReader.Section(name); s == nil {
 		return nil
 	}
@@ -70,7 +70,7 @@ func (r *ElfReader) ReaderParseSection(name string) []byte {
 // and then place them into an [offset => string] type map
 // alignment does not matter here, as when \x00 exists more than once
 // it will simply be skipped.
-func (r *ElfReader) ReaderParseStrings(buf []byte) [][]byte {
+func (r *MachoReader) ReaderParseStrings(buf []byte) [][]byte {
 	var slice [][]byte
 	if slice = bytes.Split(buf, []byte("\x00")); slice == nil {
 		return nil
@@ -80,8 +80,8 @@ func (r *ElfReader) ReaderParseStrings(buf []byte) [][]byte {
 }
 
 // Close softly close all of the instances associated
-// with the ElfReader
-func (r *ElfReader) Close() {
+// with the MachoReader
+func (r *MachoReader) Close() {
 	r.ExecReader.Close()
 	r.File.Close()
 }
