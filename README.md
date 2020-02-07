@@ -23,8 +23,6 @@ Example: ./macho-strings --binary=/bin/echo
 
   -binary string
         the path to the Mach-O you wish to parse
-  -demangle
-        demangle C++ symbols into their original source identifiers (default true)
   -no-human
         don't validate that its a human readable string, this increases the amount of junk
   -no-trim
