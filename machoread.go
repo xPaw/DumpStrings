@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"debug/macho"
-	"errors"
 	"os"
 )
 
@@ -21,12 +20,12 @@ func NewMachoReader(path string) (*MachoReader, error) {
 
 	r.File, err = os.OpenFile(path, os.O_RDONLY, os.ModePerm)
 	if err != nil {
-		return nil, errors.New("failed to open the file")
+		return nil, err
 	}
 
 	r.ExecReader, err = macho.NewFile(r.File)
 	if err != nil {
-		return nil, errors.New("failed to parse the Mach-O file succesfully")
+		return nil, err
 	}
 
 	return &r, nil
