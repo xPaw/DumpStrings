@@ -11,6 +11,7 @@ var (
 	targetOpt    = flag.String("target", "", "the target type of the binary (macho/elf/pe)")
 	demangleOpt  = flag.Bool("demangle", true, "demangle C++ symbols into their original source identifiers")
 	minLengthOpt = flag.Int("min-length", 4, "minimum length of a string")
+	sectionsOpt  = flag.Bool("print-sections", false, "print all the section names found in the binary")
 )
 
 func ReadSection(reader *FileReader, section string) {
@@ -55,6 +56,11 @@ func main() {
 	}
 
 	defer r.Close()
+
+	if *sectionsOpt {
+		r.PrintSections()
+		return
+	}
 
 	var sections []string
 

@@ -53,6 +53,23 @@ func NewFileReader(path string, fileType string) (*FileReader, error) {
 	return &r, nil
 }
 
+func (r *FileReader) PrintSections() {
+	switch r.FileType {
+	case "elf":
+		for _, s := range r.ExecReader.(*elf.File).Sections {
+			fmt.Println(s.Name)
+		}
+	case "pe":
+		for _, s := range r.ExecReader.(*pe.File).Sections {
+			fmt.Println(s.Name)
+		}
+	case "macho":
+		for _, s := range r.ExecReader.(*macho.File).Sections {
+			fmt.Println(s.Name)
+		}
+	}
+}
+
 // ReaderParseSection parses the section and returns an array of bytes containing the content
 func (r *FileReader) ReaderParseSection(name string) []byte {
 	var sectionData []byte
