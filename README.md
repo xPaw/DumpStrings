@@ -25,8 +25,8 @@ Example: ./DumpStrings --binary=/bin/echo
         the path to the binary you wish to parse
   -demangle
         demangle C++ symbols into their original source identifiers (default true)
-  -no-human
-        don't validate that its a human readable string, this increases the amount of junk
-  -no-trim
-        disable triming whitespace and trailing newlines
+  -min-length int
+        minimum length of a string (default 4)
+  -target string
+        the target type of the binary (macho/elf/pe)
 ```

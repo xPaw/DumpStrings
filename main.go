@@ -4,15 +4,13 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"strings"
 )
 
 var (
-	binaryOpt   = flag.String("binary", "", "the path to the binary you wish to parse")
-	targetOpt   = flag.String("target", "", "the target type of the binary (macho/elf/pe)")
-	demangleOpt = flag.Bool("demangle", true, "demangle C++ symbols into their original source identifiers")
-	trimOpt     = flag.Bool("no-trim", false, "disable trimming whitespace and trailing newlines")
-	humanOpt    = flag.Bool("no-human", false, "don't validate that it's a human readable string, this increases the amount of junk")
+	binaryOpt    = flag.String("binary", "", "the path to the binary you wish to parse")
+	targetOpt    = flag.String("target", "", "the target type of the binary (macho/elf/pe)")
+	demangleOpt  = flag.Bool("demangle", true, "demangle C++ symbols into their original source identifiers")
+	minLengthOpt = flag.Int("min-length", 4, "minimum length of a string")
 )
 
 func ReadSection(reader *FileReader, section string) {
@@ -22,21 +20,17 @@ func ReadSection(reader *FileReader, section string) {
 		nodes := reader.ReaderParseStrings(sect)
 
 		for _, bytes := range nodes {
+			if len(bytes) < 1 {
+				continue
+			}
+
 			str := string(bytes)
 
-			if !*humanOpt {
-				if !UtilIsNice(str) {
-					continue
-				}
+			if len(str) < *minLengthOpt {
+				continue
 			}
 
-			if !*trimOpt {
-				str = strings.TrimSpace(str)
-				bad := []string{"\n", "\r"}
-				for _, char := range bad {
-					str = strings.Replace(str, char, "", -1)
-				}
-			}
+			str = UtilEscape(str)
 
 			if *demangleOpt {
 				demangled, err := UtilDemangle(&str)

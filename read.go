@@ -1,12 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"debug/elf"
 	"debug/macho"
 	"debug/pe"
 	"fmt"
 	"os"
+	"unicode"
 )
 
 // ExecReader interface for common operations across different executable formats
@@ -106,13 +106,28 @@ func (r *FileReader) ReaderParseSection(name string) []byte {
 	return sectionData
 }
 
-// ReaderParseStrings parses the strings by a null terminator
+// ReaderParseStrings splits the byte buffer into slices, treating non-ASCII characters as delimiters.
 func (r *FileReader) ReaderParseStrings(buf []byte) [][]byte {
-	slice := bytes.Split(buf, []byte("\x00"))
-	if slice == nil {
-		return nil
+	var result [][]byte
+	var start int
+
+	for i := 0; i < len(buf); i++ {
+		// Check if the current byte is an ASCII character
+		if buf[i] == 0 || buf[i] > 127 || !(unicode.IsPrint(rune(buf[i])) || unicode.IsSpace(rune(buf[i]))) {
+			// If the current byte is non-ASCII, split here
+			if start < i {
+				result = append(result, buf[start:i])
+			}
+			start = i + 1
+		}
 	}
-	return slice
+
+	// Add the last segment if there's any remaining data
+	if start < len(buf) {
+		result = append(result, buf[start:])
+	}
+
+	return result
 }
 
 // Close softly closes all of the instances associated with the FileReader
