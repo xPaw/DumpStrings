@@ -66,7 +66,7 @@ func main() {
 
 	switch *targetOpt {
 	case "macho":
-		sections = []string{"__bss", "__const", "__cstring", "__cfstring", "__text", "__TEXT", "__objc_classname__TEXT"}
+		sections = []string{"__bss", "__const", "__cstring", "__cfstring", "__text", "__TEXT", "__objc_classname__TEXT", "__data"}
 	case "elf":
 		sections = []string{".dynstr", ".rodata", ".rdata", ".strtab", ".comment", ".note", ".stab", ".stabstr", ".note.ABI-tag", ".note.gnu.build-id"}
 	case "pe":
