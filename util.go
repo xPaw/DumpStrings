@@ -21,9 +21,6 @@ func UtilDemangle(name string) string {
 	if name[0] == '.' || name[0] == '$' {
 		skip++
 	}
-	if name[skip] == '_' {
-		skip++
-	}
 	result := demangle.Filter(name[skip:], demangle.LLVMStyle)
 
 	if result == name[skip:] {
