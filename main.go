@@ -33,10 +33,7 @@ func ReadSection(reader *FileReader, section string) {
 			str = UtilEscape(str)
 
 			if *demangleOpt {
-				demangled, err := UtilDemangle(&str)
-				if err == nil {
-					str = demangled
-				}
+				str = UtilDemangle(str)
 			}
 
 			fmt.Println(str)
