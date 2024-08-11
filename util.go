@@ -21,6 +21,11 @@ func UtilDemangle(name string) string {
 	if name[0] == '.' || name[0] == '$' {
 		skip++
 	}
+
+	if strings.HasPrefix(name, "__Z") {
+		skip++
+	}
+
 	result := demangle.Filter(name[skip:], demangle.LLVMStyle)
 
 	if result == name[skip:] {
