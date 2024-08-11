@@ -27,6 +27,8 @@ Example: ./DumpStrings --binary=/bin/echo
         demangle C++ symbols into their original source identifiers (default true)
   -min-length int
         minimum length of a string (default 4)
+  -print-sections
+        print all the section names found in the binary
   -target string
         the target type of the binary (macho/elf/pe)
 ```
