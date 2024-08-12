@@ -14,32 +14,40 @@ var (
 	sectionsOpt  = flag.Bool("print-sections", false, "print all the section names found in the binary")
 )
 
-func ReadSection(reader *FileReader, section string) {
+func ReadSection(reader *FileReader, section string) int {
 	sect := reader.ReaderParseSection(section)
 
-	if sect != nil {
-		nodes := reader.ReaderParseStrings(sect)
-
-		for _, bytes := range nodes {
-			if len(bytes) < 1 {
-				continue
-			}
-
-			str := string(bytes)
-
-			if len(str) < *minLengthOpt {
-				continue
-			}
-
-			str = UtilEscape(str)
-
-			if *demangleOpt {
-				str = UtilDemangle(str)
-			}
-
-			fmt.Println(str)
-		}
+	if sect == nil {
+		return 0
 	}
+
+	nodes := reader.ReaderParseStrings(sect)
+
+	read := 0
+
+	for _, bytes := range nodes {
+		if len(bytes) < 1 {
+			continue
+		}
+
+		str := string(bytes)
+
+		if len(str) < *minLengthOpt {
+			continue
+		}
+
+		str = UtilEscape(str)
+
+		if *demangleOpt {
+			str = UtilDemangle(str)
+		}
+
+		fmt.Println(str)
+
+		read++
+	}
+
+	return read
 }
 
 func main() {
@@ -75,7 +83,14 @@ func main() {
 		log.Fatal("Unknown target")
 	}
 
+	read := 0
+
 	for _, section := range sections {
-		ReadSection(r, section)
+		read += ReadSection(r, section)
+	}
+
+	// Fallback to .text for some dlls
+	if read == 0 && *targetOpt == "pe" {
+		ReadSection(r, ".text")
 	}
 }
