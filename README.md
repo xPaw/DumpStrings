@@ -29,6 +29,8 @@ Example: ./DumpStrings --binary=/bin/echo
         minimum length of a string (default 4)
   -print-sections
         print all the section names found in the binary
+  -sym-length int
+        maximum length of a string to filter out when the string contains majority of non a-Z characters (default 10)
   -target string
         the target type of the binary (macho/elf/pe)
 ```

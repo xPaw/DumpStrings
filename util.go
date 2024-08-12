@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"github.com/ianlancetaylor/demangle"
 	"strings"
+	"unicode"
 )
 
 var charactersToEscape = map[string]string{
@@ -33,9 +34,11 @@ func UtilDemangle(name string) string {
 	}
 
 	var out bytes.Buffer
+
 	if name[0] == '.' {
 		out.WriteByte('.')
 	}
+
 	out.WriteString(result)
 	return out.String()
 }
@@ -45,5 +48,21 @@ func UtilEscape(str string) string {
 	for char, escapedChar := range charactersToEscape {
 		str = strings.ReplaceAll(str, char, escapedChar)
 	}
+
 	return str
+}
+
+func UtilIsMajoritySymbols(str string) bool {
+	letters := 0
+	symbols := 0
+
+	for _, char := range str {
+		if unicode.IsLetter(char) || unicode.IsNumber(char) {
+			letters++
+		} else {
+			symbols++
+		}
+	}
+
+	return symbols >= letters
 }

@@ -11,6 +11,7 @@ var (
 	targetOpt    = flag.String("target", "", "the target type of the binary (macho/elf/pe)")
 	demangleOpt  = flag.Bool("demangle", true, "demangle C++ symbols into their original source identifiers")
 	minLengthOpt = flag.Int("min-length", 4, "minimum length of a string")
+	symLengthOpt = flag.Int("sym-length", 10, "maximum length of a string to filter out when the string contains majority of non a-Z characters")
 	sectionsOpt  = flag.Bool("print-sections", false, "print all the section names found in the binary")
 )
 
@@ -33,6 +34,10 @@ func ReadSection(reader *FileReader, section string) int {
 		str := string(bytes)
 
 		if len(str) < *minLengthOpt {
+			continue
+		}
+
+		if len(str) <= *symLengthOpt && UtilIsMajoritySymbols(str) {
 			continue
 		}
 
