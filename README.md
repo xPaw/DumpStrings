@@ -1,36 +1,67 @@
 # DumpStrings
 
-The better `strings` utility for the reverse engineer.
+The better `strings` utility for reverse engineers.
 
-`DumpStrings` will programmatically read an Macho-O (MacOS), ELF (Linux), and PE (Windows) binary's string sections within a given binary.
-This is meant to be much like the `strings` UNIX utility, however is purpose built for Mach-O binaries. 
+`DumpStrings` programmatically extracts strings from Mach-O (macOS), ELF (Linux), and PE (Windows) binary formats by parsing their string-containing sections. Unlike the traditional UNIX `strings` utility that scans the entire file, DumpStrings intelligently targets specific sections known to contain string data, providing more relevant results for binary analysis.
 
-This means that you can get suitable information about the strings within the binary.
-This utility also has the functionality to 'demangle' C++ symbols, iterate linked libraries.
+## Features
 
-This can prove extremely useful for quickly grabbing strings when analysing a binary.
+- **Multi-format support**: Handles Mach-O, ELF, and PE binary formats
+- **Section-aware parsing**: Targets specific sections containing strings rather than scanning entire files
+- **C++ symbol demangling**: Automatically converts mangled C++ symbols back to readable form
+- **Intelligent filtering**: Configurable filters for string length and symbol-heavy content
+- **Section enumeration**: View all available sections in a binary for analysis
 
-# Building
-```
+## Building
+
+```bash
 git clone https://github.com/xPaw/DumpStrings
 cd DumpStrings
 go build
 ```
 
-# Usage
-```
-Example: ./DumpStrings --binary=/bin/echo
+## Usage
 
-  -binary string
-        the path to the binary you wish to parse
-  -demangle
-        demangle C++ symbols into their original source identifiers (default true)
-  -min-length int
-        minimum length of a string (default 4)
-  -print-sections
-        print all the section names found in the binary
-  -sym-length int
-        maximum length of a string to filter out when the string contains majority of non a-Z characters (default 10)
-  -target string
-        the target type of the binary (macho/elf/pe)
+### Basic Usage
+
+```bash
+# Extract strings from a Linux ELF binary
+./DumpStrings --binary=/bin/echo --target=elf
+
+# Extract strings from a macOS Mach-O binary
+./DumpStrings --binary=/usr/bin/ls --target=macho
+
+# Extract strings from a Windows PE binary
+./DumpStrings --binary=program.exe --target=pe
 ```
+
+### Advanced Options
+
+```bash
+# Show all available sections in a binary
+./DumpStrings --binary=/bin/echo --target=elf --print-sections
+
+# Extract longer strings only (minimum 10 characters)
+./DumpStrings --binary=/bin/echo --target=elf --min-length=10
+
+# Disable C++ symbol demangling
+./DumpStrings --binary=/bin/echo --target=elf --demangle=false
+
+# Adjust symbol filtering (strings with mostly symbols, max 5 chars)
+./DumpStrings --binary=/bin/echo --target=elf --sym-length=5
+```
+
+## Command Line Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--binary` | string | | Path to the binary you wish to parse (required) |
+| `--target` | string | | Target binary type: `macho`, `elf`, or `pe` (required) |
+| `--demangle` | bool | true | Demangle C++ symbols into their original source identifiers |
+| `--min-length` | int | 4 | Minimum length of a string to include in output |
+| `--sym-length` | int | 10 | Maximum length for strings containing majority non-alphanumeric characters |
+| `--print-sections` | bool | false | Print all section names found in the binary and exit |
+
+## Output
+
+DumpStrings outputs one string per line, with special characters escaped (e.g., `\n`, `\t`, `\r`). When demangling is enabled, C++ mangled symbols are automatically converted to their readable form.
