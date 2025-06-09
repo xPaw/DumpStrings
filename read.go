@@ -54,20 +54,32 @@ func NewFileReader(path string, fileType string) (*FileReader, error) {
 }
 
 func (r *FileReader) PrintSections() {
+	sectionNames := r.GetAllSectionNames()
+	for _, name := range sectionNames {
+		fmt.Println(name)
+	}
+}
+
+// GetAllSectionNames returns all section names from the binary
+func (r *FileReader) GetAllSectionNames() []string {
+	var sectionNames []string
+
 	switch r.FileType {
 	case "elf":
 		for _, s := range r.ExecReader.(*elf.File).Sections {
-			fmt.Println(s.Name)
+			sectionNames = append(sectionNames, s.Name)
 		}
 	case "pe":
 		for _, s := range r.ExecReader.(*pe.File).Sections {
-			fmt.Println(s.Name)
+			sectionNames = append(sectionNames, s.Name)
 		}
 	case "macho":
 		for _, s := range r.ExecReader.(*macho.File).Sections {
-			fmt.Println(s.Name)
+			sectionNames = append(sectionNames, s.Name)
 		}
 	}
+
+	return sectionNames
 }
 
 // ReaderParseSection parses the section and returns an array of bytes containing the content

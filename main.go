@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"strings"
 )
 
 var (
@@ -55,6 +56,20 @@ func ReadSection(reader *FileReader, section string) int {
 	return read
 }
 
+// GetRodataStrSections returns all .rodata.str* section names from an ELF file
+func GetRodataStrSections(reader *FileReader) []string {
+	var rodataStrSections []string
+	allSections := reader.GetAllSectionNames()
+
+	for _, sectionName := range allSections {
+		if strings.HasPrefix(sectionName, ".rodata.str") {
+			rodataStrSections = append(rodataStrSections, sectionName)
+		}
+	}
+
+	return rodataStrSections
+}
+
 func main() {
 	flag.Parse()
 
@@ -82,6 +97,9 @@ func main() {
 		sections = []string{"__bss", "__const", "__cstring", "__cfstring", "__text", "__TEXT", "__objc_classname__TEXT", "__data"}
 	case "elf":
 		sections = []string{".dynstr", ".rodata", ".rdata", ".data", ".strtab", ".comment", ".note", ".stab", ".stabstr", ".note.ABI-tag", ".note.gnu.build-id"}
+		// Add all .rodata.str* sections
+		rodataStrSections := GetRodataStrSections(r)
+		sections = append(sections, rodataStrSections...)
 	case "pe":
 		sections = []string{".data", ".rdata"}
 	default:
