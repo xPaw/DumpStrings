@@ -1,0 +1,38 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            artifact_name: DumpStrings
+            asset_name: DumpStrings-linux-amd64
+          - os: windows-latest
+            artifact_name: DumpStrings.exe
+            asset_name: DumpStrings-windows-amd64.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Build binary
+      run: go build -v -o ${{ matrix.artifact_name }} .
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: ${{ matrix.asset_name }}
+        path: ${{ matrix.artifact_name }}
