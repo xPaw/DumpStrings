@@ -6,7 +6,7 @@ The better `strings` utility for reverse engineers.
 
 ## Features
 
-- **Multi-format support**: Handles Mach-O, ELF, and PE binary formats
+- **Multi-format support**: Handles Mach-O, ELF, and PE binary formats with automatic format detection
 - **Section-aware parsing**: Targets specific sections containing strings rather than scanning entire files
 - **C++ symbol demangling**: Automatically converts mangled C++ symbols back to readable form
 - **Intelligent filtering**: Configurable filters for string length and symbol-heavy content
@@ -25,13 +25,12 @@ go build
 ### Basic Usage
 
 ```bash
-# Extract strings from a Linux ELF binary
+# Extract strings (format is auto-detected)
+./DumpStrings --binary=/bin/echo
+
+# Explicitly specify target format
 ./DumpStrings --binary=/bin/echo --target=elf
-
-# Extract strings from a macOS Mach-O binary
 ./DumpStrings --binary=/usr/bin/ls --target=macho
-
-# Extract strings from a Windows PE binary
 ./DumpStrings --binary=program.exe --target=pe
 ```
 
@@ -39,16 +38,16 @@ go build
 
 ```bash
 # Show all available sections in a binary
-./DumpStrings --binary=/bin/echo --target=elf --print-sections
+./DumpStrings --binary=/bin/echo --print-sections
 
 # Extract longer strings only (minimum 10 characters)
-./DumpStrings --binary=/bin/echo --target=elf --min-length=10
+./DumpStrings --binary=/bin/echo --min-length=10
 
 # Disable C++ symbol demangling
-./DumpStrings --binary=/bin/echo --target=elf --demangle=false
+./DumpStrings --binary=/bin/echo --demangle=false
 
 # Adjust symbol filtering (strings with mostly symbols, max 5 chars)
-./DumpStrings --binary=/bin/echo --target=elf --sym-length=5
+./DumpStrings --binary=/bin/echo --sym-length=5
 ```
 
 ## Command Line Options
@@ -56,7 +55,7 @@ go build
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--binary` | string | | Path to the binary you wish to parse (required) |
-| `--target` | string | | Target binary type: `macho`, `elf`, or `pe` (required) |
+| `--target` | string | | Target binary type: `macho`, `elf`, or `pe` (auto-detected if omitted) |
 | `--demangle` | bool | true | Demangle C++ symbols into their original source identifiers |
 | `--min-length` | int | 4 | Minimum length of a string to include in output |
 | `--sym-length` | int | 10 | Maximum length for strings containing majority non-alphanumeric characters |
