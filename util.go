@@ -18,6 +18,10 @@ var charactersToEscape = map[string]string{
 // UtilDemangle will demangle a symbol by string, this is
 // simply just a friendly wrapped around the demangle package
 func UtilDemangle(name string) string {
+	if len(name) == 0 {
+		return name
+	}
+
 	skip := 0
 	if name[0] == '.' || name[0] == '$' {
 		skip++
