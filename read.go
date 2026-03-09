@@ -5,7 +5,6 @@ import (
 	"debug/macho"
 	"debug/pe"
 	"fmt"
-	"io"
 	"os"
 	"unicode"
 )
@@ -85,47 +84,31 @@ func (r *FileReader) GetAllSectionNames() []string {
 
 // ReaderParseSection parses the section and returns an array of bytes containing the content
 func (r *FileReader) ReaderParseSection(name string) []byte {
-	var sectionData []byte
-	var sectionOffset int64
-	var sectionSize uint64
-
 	switch r.FileType {
 	case "elf":
 		if s := r.ExecReader.(*elf.File).Section(name); s != nil {
-			sectionOffset = int64(s.Offset)
-			sectionSize = s.Size
+			data, err := s.Data()
+			if err == nil {
+				return data
+			}
 		}
 	case "pe":
 		if s := r.ExecReader.(*pe.File).Section(name); s != nil {
-			sectionOffset = int64(s.Offset)
-			sectionSize = uint64(s.SizeOfRawData)
+			data, err := s.Data()
+			if err == nil {
+				return data
+			}
 		}
 	case "macho":
 		if s := r.ExecReader.(*macho.File).Section(name); s != nil {
-			sectionOffset = int64(s.Offset)
-			sectionSize = uint64(s.Size)
+			data, err := s.Data()
+			if err == nil {
+				return data
+			}
 		}
-	default:
-		return nil
 	}
 
-	if sectionSize == 0 {
-		return nil
-	}
-
-	_, err := r.File.Seek(sectionOffset, io.SeekStart)
-	if err != nil {
-		return nil
-	}
-
-	sectionData = make([]byte, sectionSize)
-
-	_, err = io.ReadFull(r.File, sectionData)
-	if err != nil {
-		return nil
-	}
-
-	return sectionData
+	return nil
 }
 
 // ReaderParseStrings splits the byte buffer into slices, treating non-ASCII characters as delimiters.
