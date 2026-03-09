@@ -31,6 +31,14 @@ func NewFileReader(path string, fileType string) (*FileReader, error) {
 		return nil, err
 	}
 
+	if fileType == "" {
+		fileType, err = detectFileType(r.File)
+		if err != nil {
+			r.File.Close()
+			return nil, err
+		}
+	}
+
 	r.FileType = fileType
 
 	switch fileType {
@@ -51,6 +59,29 @@ func NewFileReader(path string, fileType string) (*FileReader, error) {
 	}
 
 	return &r, nil
+}
+
+// detectFileType identifies the binary format by reading magic bytes
+func detectFileType(f *os.File) (string, error) {
+	var magic [4]byte
+	if _, err := f.ReadAt(magic[:], 0); err != nil {
+		return "", fmt.Errorf("failed to read file header: %w", err)
+	}
+
+	switch {
+	case magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F':
+		return "elf", nil
+	case magic[0] == 'M' && magic[1] == 'Z':
+		return "pe", nil
+	case magic[0] == 0xFE && magic[1] == 0xED && magic[2] == 0xFA && (magic[3] == 0xCE || magic[3] == 0xCF):
+		return "macho", nil
+	case magic[0] == 0xCE && magic[1] == 0xFA && magic[2] == 0xED && magic[3] == 0xFE:
+		return "macho", nil
+	case magic[0] == 0xCF && magic[1] == 0xFA && magic[2] == 0xED && magic[3] == 0xFE:
+		return "macho", nil
+	default:
+		return "", fmt.Errorf("unable to detect file type from magic bytes: %02x %02x %02x %02x", magic[0], magic[1], magic[2], magic[3])
+	}
 }
 
 func (r *FileReader) PrintSections() {

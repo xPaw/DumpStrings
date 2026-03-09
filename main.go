@@ -92,7 +92,7 @@ func main() {
 
 	var sections []string
 
-	switch *targetOpt {
+	switch r.FileType {
 	case "macho":
 		sections = []string{"__bss", "__const", "__cstring", "__cfstring", "__text", "__TEXT", "__objc_classname__TEXT", "__data"}
 	case "elf":
@@ -113,7 +113,7 @@ func main() {
 	}
 
 	// Fallback to .text for some dlls
-	if read == 0 && *targetOpt == "pe" {
+	if read == 0 && r.FileType == "pe" {
 		ReadSection(r, ".text")
 	}
 }
