@@ -48,7 +48,6 @@ func UtilDemangle(name string) string {
 }
 
 func UtilEscape(str string) string {
-	//str = strings.TrimSpace(str)
 	for char, escapedChar := range charactersToEscape {
 		str = strings.ReplaceAll(str, char, escapedChar)
 	}
