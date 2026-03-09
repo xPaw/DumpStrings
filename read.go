@@ -98,7 +98,7 @@ func (r *FileReader) ReaderParseSection(name string) []byte {
 	case "pe":
 		if s := r.ExecReader.(*pe.File).Section(name); s != nil {
 			sectionOffset = int64(s.Offset)
-			sectionSize = uint64(s.Size)
+			sectionSize = uint64(s.SizeOfRawData)
 		}
 	case "macho":
 		if s := r.ExecReader.(*macho.File).Section(name); s != nil {
