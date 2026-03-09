@@ -26,7 +26,7 @@ func NewFileReader(path string, fileType string) (*FileReader, error) {
 	var r FileReader
 	var err error
 
-	r.File, err = os.OpenFile(path, os.O_RDONLY, os.ModePerm)
+	r.File, err = os.Open(path)
 	if err != nil {
 		return nil, err
 	}
