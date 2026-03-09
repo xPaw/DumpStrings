@@ -7,13 +7,13 @@ import (
 	"unicode"
 )
 
-var charactersToEscape = map[string]string{
-	"\t": "\\t",
-	"\v": "\\v",
-	"\n": "\\n",
-	"\r": "\\r",
-	"\f": "\\f",
-}
+var escapeReplacer = strings.NewReplacer(
+	"\t", "\\t",
+	"\v", "\\v",
+	"\n", "\\n",
+	"\r", "\\r",
+	"\f", "\\f",
+)
 
 // UtilDemangle will demangle a symbol by string, this is
 // simply just a friendly wrapped around the demangle package
@@ -48,11 +48,7 @@ func UtilDemangle(name string) string {
 }
 
 func UtilEscape(str string) string {
-	for char, escapedChar := range charactersToEscape {
-		str = strings.ReplaceAll(str, char, escapedChar)
-	}
-
-	return str
+	return escapeReplacer.Replace(str)
 }
 
 func UtilIsMajoritySymbols(str string) bool {
