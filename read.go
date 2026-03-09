@@ -5,6 +5,7 @@ import (
 	"debug/macho"
 	"debug/pe"
 	"fmt"
+	"io"
 	"os"
 	"unicode"
 )
@@ -112,22 +113,14 @@ func (r *FileReader) ReaderParseSection(name string) []byte {
 		return nil
 	}
 
-	_, err := r.File.Seek(0, 0)
+	_, err := r.File.Seek(sectionOffset, io.SeekStart)
 	if err != nil {
 		return nil
 	}
 
-	ret, err := r.File.Seek(sectionOffset, 0)
-	if ret != sectionOffset || err != nil {
-		return nil
-	}
-
 	sectionData = make([]byte, sectionSize)
-	if sectionData == nil {
-		return nil
-	}
 
-	_, err = r.File.Read(sectionData)
+	_, err = io.ReadFull(r.File, sectionData)
 	if err != nil {
 		return nil
 	}
