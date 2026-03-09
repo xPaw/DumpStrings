@@ -27,12 +27,12 @@ func ReadSection(reader *FileReader, section string) int {
 
 	read := 0
 
-	for _, bytes := range nodes {
-		if len(bytes) < 1 {
+	for _, b := range nodes {
+		if len(b) < 1 {
 			continue
 		}
 
-		str := string(bytes)
+		str := string(b)
 
 		if len(str) < *minLengthOpt {
 			continue
