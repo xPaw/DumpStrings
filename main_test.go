@@ -93,9 +93,14 @@ func TestBuildVersion(t *testing.T) {
 func writeTestELF(t *testing.T, rodata string) string {
 	t.Helper()
 
-	data := buildElf64(binary.LittleEndian, []testElfSection{{name: ".rodata", data: []byte(rodata)}})
+	return writeTestFile(t, buildElf64(binary.LittleEndian, []testElfSection{{name: ".rodata", data: []byte(rodata)}}))
+}
 
-	path := filepath.Join(t.TempDir(), "x.so")
+// writeTestFile writes data to a new temporary file and returns its path.
+func writeTestFile(t *testing.T, data []byte) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "x.bin")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}

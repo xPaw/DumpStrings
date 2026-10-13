@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -340,6 +341,67 @@ func TestSelfCheckFailure(t *testing.T) {
 		if got, want := job.unchanged(), name == "none"; got != want {
 			t.Errorf("%s: unchanged = %v, want %v", name, got, want)
 		}
+	}
+}
+
+func TestSelfCheckFailureExitCode(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"r_strings.txt": "a\n",
+		"t_strings.txt": "a\nb\n",
+	})
+
+	job, err := loadDedupeJob(root, writeConf(t, "ref r_strings.txt\ntarget *\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	job.before["lost line"] = struct{}{}
+
+	var errOut bytes.Buffer
+
+	if code := job.run(root, false, io.Discard, &errOut); code != 3 || !strings.Contains(errOut.String(), "self-check failed") {
+		t.Errorf("exit %d, stderr %q", code, errOut.String())
+	}
+
+	if got := readTree(t, root, "t_strings.txt"); got != "a\nb\n" {
+		t.Errorf("failed self-check wrote: %q", got)
+	}
+}
+
+func TestDedupeSymlinks(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"real/r_strings.txt": "a\n",
+		"real/t_strings.txt": "a\nb\n",
+		"elsewhere/u.txt":    "a\nc\n",
+	})
+
+	link := filepath.Join(root, "link")
+	uLink := filepath.Join(root, "real", "u_strings.txt")
+
+	symlink(t, filepath.Join(root, "real"), link)
+	symlink(t, filepath.Join(root, "elsewhere", "u.txt"), uLink)
+
+	var out bytes.Buffer
+
+	code := dedupeRun(link, writeConf(t, "ref r_strings.txt\ntarget *\n\nref r_strings.txt\ntarget u_strings.txt\n"), false, &out, io.Discard)
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+
+	for name, want := range map[string]string{"real/t_strings.txt": "b\n", "elsewhere/u.txt": "c\n"} {
+		if got := readTree(t, root, name); got != want {
+			t.Errorf("%s: %q, want %q", name, got, want)
+		}
+	}
+
+	if info, err := os.Lstat(uLink); err != nil || info.Mode()&fs.ModeSymlink == 0 {
+		t.Errorf("target link replaced: %v, %v", info, err)
+	}
+
+	// u_strings.txt is a target of step 1 as an explicitly loaded file, not
+	// through the walk.
+	if !strings.Contains(out.String(), "step 1: refs [r_strings.txt], 2 targets changed, 2 lines removed\n") {
+		t.Errorf("stdout %q", out.String())
 	}
 }
 

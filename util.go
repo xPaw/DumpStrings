@@ -20,10 +20,27 @@ func sortedUnique(lines []string) []string {
 
 // walkFiles calls fn with the path of every regular file under root whose name
 // match accepts. Directories named .git or node_modules below root are skipped
-// and symbolic links are not followed. A walk error goes to onErr: when onErr
-// returns an error the walk stops with it, otherwise the entry is skipped.
+// and symbolic links below root are not followed; a root that is a symbolic
+// link is walked through, with paths still reported under root. A walk error
+// goes to onErr: when onErr returns an error the walk stops with it, otherwise
+// the entry is skipped.
 func walkFiles(root string, match func(name string) bool, fn func(path string) error, onErr func(error) error) error {
-	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	walkRoot := root
+
+	if info, err := os.Lstat(root); err == nil && info.Mode()&fs.ModeSymlink != 0 {
+		if resolved, err := filepath.EvalSymlinks(root); err == nil {
+			walkRoot = resolved
+		}
+	}
+
+	return filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
+		if path == walkRoot {
+			path = root
+		} else if walkRoot != root {
+			rel, _ := filepath.Rel(walkRoot, path)
+			path = filepath.Join(root, rel)
+		}
+
 		if err != nil {
 			if err := onErr(err); err != nil {
 				return err
@@ -53,8 +70,13 @@ func walkFiles(root string, match func(name string) bool, fn func(path string) e
 }
 
 // replaceFile writes data next to path and renames it over the original so a
-// failed write never leaves a truncated file.
+// failed write never leaves a truncated file. When path is a symbolic link,
+// the file it resolves to is replaced and the link is kept.
 func replaceFile(path string, data []byte, perm fs.FileMode) error {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".DumpStrings-*")
 	if err != nil {
 		return err

@@ -150,7 +150,12 @@ func (r *peReader) walkImports(rva uint32, wide bool, base uint64, out map[uint3
 	}
 
 	for i := uint32(0); i < maxImportDescriptors; i++ {
-		d := r.bytes(rva+i*20, 20)
+		at := rva + i*20
+		if at < rva {
+			return
+		}
+
+		d := r.bytes(at, 20)
 		if d == nil || allZero(d) {
 			return
 		}
@@ -174,7 +179,12 @@ func (r *peReader) walkDelayImports(rva uint32, wide bool, base uint64, out map[
 	}
 
 	for i := uint32(0); i < maxImportDescriptors; i++ {
-		d := r.bytes(rva+i*32, 32)
+		at := rva + i*32
+		if at < rva {
+			return
+		}
+
+		d := r.bytes(at, 32)
 		if d == nil || allZero(d) {
 			return
 		}
@@ -239,9 +249,25 @@ func importRewrites(hints map[uint32]struct{}, addr uint64, n int) map[int]int {
 	return m
 }
 
+// peSizeOfHeaders returns SizeOfHeaders from the optional header, or 0 when
+// there is none.
+func peSizeOfHeaders(f *pe.File) uint32 {
+	switch oh := f.OptionalHeader.(type) {
+	case *pe.OptionalHeader32:
+		return oh.SizeOfHeaders
+	case *pe.OptionalHeader64:
+		return oh.SizeOfHeaders
+	}
+
+	return 0
+}
+
 // parsePE selects every .data and .rdata section, and every .text section as
-// the fallback. The fallback is dropped when a data section runs past the end
-// of the file, since its missing bytes may hold the lines.
+// the fallback. A section whose raw data starts at offset 0 or inside the
+// headers has no data of its own and is skipped. The fallback is dropped when
+// a data section runs past the end of the file, since its missing bytes may
+// hold the lines, and the binary is then readable only through the data
+// bytes that are present.
 func parsePE(data []byte, warn Warner) (*Binary, error) {
 	f, err := pe.NewFile(bytes.NewReader(data))
 	if err != nil {
@@ -249,6 +275,7 @@ func parsePE(data []byte, warn Warner) (*Binary, error) {
 	}
 
 	b := &Binary{}
+	headers := peSizeOfHeaders(f)
 
 	secs := make([]peSection, 0, len(f.Sections))
 	for _, s := range f.Sections {
@@ -285,6 +312,12 @@ func parsePE(data []byte, warn Warner) (*Binary, error) {
 
 		h.Read = kind.String()
 
+		if s.Offset == 0 || s.Offset < headers {
+			warn("%s: section at offset 0x%x lies inside the headers, skipped", s.Name, s.Offset)
+			b.Headers = append(b.Headers, h)
+			continue
+		}
+
 		// Bytes past VirtualSize are file alignment padding.
 		size := s.Size
 		if s.VirtualSize > 0 && s.VirtualSize < size {
@@ -319,6 +352,7 @@ func parsePE(data []byte, warn Warner) (*Binary, error) {
 
 	if truncated {
 		b.Fallback = nil
+		b.Readable = len(b.Sections) > 0
 	}
 
 	return b, nil

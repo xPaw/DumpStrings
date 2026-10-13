@@ -1,9 +1,11 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -39,6 +41,81 @@ func readTree(t *testing.T, root, name string) string {
 	}
 
 	return string(data)
+}
+
+// symlink creates a symbolic link at link pointing to target, skipping the
+// test when the system does not allow it.
+func symlink(t *testing.T, target, link string) {
+	t.Helper()
+
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("cannot create symbolic links: %v", err)
+	}
+}
+
+func TestReplaceFileThroughSymlink(t *testing.T) {
+	root := writeTree(t, map[string]string{"real/target.txt": "old\n"})
+	link := filepath.Join(root, "links", "link.txt")
+
+	if err := os.Mkdir(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	symlink(t, filepath.Join("..", "real", "target.txt"), link)
+
+	if err := replaceFile(link, []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if info, err := os.Lstat(link); err != nil || info.Mode()&fs.ModeSymlink == 0 {
+		t.Errorf("link replaced: %v, %v", info, err)
+	}
+
+	if got := readTree(t, root, "real/target.txt"); got != "new\n" {
+		t.Errorf("target content %q", got)
+	}
+
+	for _, dir := range []string{"real", "links"} {
+		if entries, _ := os.ReadDir(filepath.Join(root, dir)); len(entries) != 1 {
+			t.Errorf("%s holds %d entries, want 1", dir, len(entries))
+		}
+	}
+}
+
+func TestWalkFilesSymlinkRoot(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"real/a.txt":      "",
+		"real/sub/b.txt":  "",
+		"outside/c.txt":   "",
+		"real/.git/d.txt": "",
+	})
+
+	symlink(t, filepath.Join(root, "outside"), filepath.Join(root, "real", "inner"))
+	symlink(t, filepath.Join(root, "real"), filepath.Join(root, "link"))
+
+	walk := func(start string) []string {
+		var got []string
+
+		err := walkFiles(start, func(string) bool { return true }, func(p string) error {
+			got = append(got, p)
+			return nil
+		}, func(err error) error { return err })
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		slices.Sort(got)
+
+		return got
+	}
+
+	for _, start := range []string{filepath.Join(root, "real"), filepath.Join(root, "link")} {
+		want := []string{filepath.Join(start, "a.txt"), filepath.Join(start, "sub", "b.txt")}
+
+		if got := walk(start); !reflect.DeepEqual(got, want) {
+			t.Errorf("walk %s = %q, want %q", start, got, want)
+		}
+	}
 }
 
 func TestUtilDemangle(t *testing.T) {

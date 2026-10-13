@@ -61,21 +61,28 @@ func runDedupe(args []string, stdout, stderr io.Writer) int {
 
 // dedupeRun does the work of runDedupe.
 func dedupeRun(root, configPath string, dryRun bool, stdout, stderr io.Writer) int {
-	fail := func(err error) int {
-		fmt.Fprintf(stderr, "dedupe: %v\n", err)
-		return 1
-	}
-
 	job, err := loadDedupeJob(root, configPath)
 	if err != nil {
-		return fail(err)
+		return dedupeFail(stderr, err)
 	}
 
+	return job.run(root, dryRun, stdout, stderr)
+}
+
+// dedupeFail reports err and returns the exit code of a failed run.
+func dedupeFail(stderr io.Writer, err error) int {
+	fmt.Fprintf(stderr, "dedupe: %v\n", err)
+	return 1
+}
+
+// run applies the steps and, unless dryRun is set or the self-check fails,
+// writes the changed files under root. It returns the process exit code.
+func (job *dedupeJob) run(root string, dryRun bool, stdout, stderr io.Writer) int {
 	job.apply(stdout)
 
 	if !job.unchanged() {
 		fmt.Fprintln(stderr, "dedupe: self-check failed: the set of all lines changed, nothing was written")
-		return 2
+		return 3
 	}
 
 	if dryRun {
@@ -83,7 +90,7 @@ func dedupeRun(root, configPath string, dryRun bool, stdout, stderr io.Writer) i
 	}
 
 	if err := job.write(root); err != nil {
-		return fail(err)
+		return dedupeFail(stderr, err)
 	}
 
 	return 0

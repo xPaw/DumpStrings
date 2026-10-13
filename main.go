@@ -214,6 +214,10 @@ func run(path string, opts Options, cfg dumpConfig, out *bufio.Writer, stderr io
 		return nil
 	}
 
+	if !b.Readable {
+		return errors.New("no readable sections")
+	}
+
 	terminated, toolchain := ResolveTerminated(cfg.terminated, data)
 	if toolchain != "" {
 		fmt.Fprintf(stderr, "%s: note: %s binary, end-of-string rule off\n", path, toolchain)

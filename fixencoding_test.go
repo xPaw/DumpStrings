@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -106,6 +107,38 @@ func TestRunFixEncodingWalk(t *testing.T) {
 
 	if got := readTree(t, dir, ".git/d.txt"); got != utf16 {
 		t.Error(".git was touched")
+	}
+}
+
+func TestRunFixEncodingSymlinks(t *testing.T) {
+	const utf16 = "\xFF\xFEa\x00"
+
+	root := writeTree(t, map[string]string{"real/a.txt": utf16, "other/f.txt": utf16})
+	dirLink := filepath.Join(root, "dirlink")
+	fileLink := filepath.Join(root, "filelink.txt")
+
+	symlink(t, filepath.Join(root, "real"), dirLink)
+	symlink(t, filepath.Join(root, "other", "f.txt"), fileLink)
+
+	var stdout bytes.Buffer
+
+	if code := runFixEncoding([]string{dirLink, fileLink}, &stdout, io.Discard); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+
+	want := " UTF-16LE - " + filepath.Join(dirLink, "a.txt") + "\n UTF-16LE - " + fileLink + "\n"
+	if stdout.String() != want {
+		t.Errorf("stdout %q, want %q", stdout.String(), want)
+	}
+
+	for _, name := range []string{"real/a.txt", "other/f.txt"} {
+		if got := readTree(t, root, name); got != "a\n" {
+			t.Errorf("%s: %q", name, got)
+		}
+	}
+
+	if info, err := os.Lstat(fileLink); err != nil || info.Mode()&fs.ModeSymlink == 0 {
+		t.Errorf("file link replaced: %v, %v", info, err)
 	}
 }
 

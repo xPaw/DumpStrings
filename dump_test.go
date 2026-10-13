@@ -213,8 +213,12 @@ func TestParseELFWithoutSections(t *testing.T) {
 	data[0x3E] = 0                         // e_shstrndx
 
 	warned := false
-	if _, err := Parse(data, "auto", func(string, ...any) { warned = true }); err == nil || !warned {
+	if b, err := Parse(data, "auto", func(string, ...any) { warned = true }); err != nil || b.Readable || !warned {
 		t.Errorf("Parse without section headers: err %v, warned %v", err, warned)
+	}
+
+	if _, _, err := runFile(writeTestFile(t, data), testRunConfig); err == nil || err.Error() != "no readable sections" {
+		t.Errorf("run without section headers: err %v", err)
 	}
 }
 

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"debug/pe"
 	"encoding/binary"
+	"fmt"
 	"maps"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -386,12 +388,165 @@ func TestPETruncatedDataSkipsFallback(t *testing.T) {
 		t.Errorf("truncated: lines %q, sections %d, fallback %d, warnings %q", lines, len(b.Sections), len(b.Fallback), warnings)
 	}
 
-	// With the data section wholly past the end of the file, the fallback
-	// section still makes the binary readable.
+	// With the only data section wholly past the end of the file, nothing
+	// can be read.
 	b, lines, warnings = parseAndDump(t, img[:len(img)-0x40], peOptions(false))
 
-	if len(lines) != 0 || len(b.Sections) != 0 || len(b.Fallback) != 0 || !b.Readable || len(warnings) != 1 {
+	if len(lines) != 0 || len(b.Sections) != 0 || len(b.Fallback) != 0 || b.Readable || len(warnings) != 1 {
 		t.Errorf("data past the end: lines %q, sections %d, fallback %d, readable %v, warnings %q", lines, len(b.Sections), len(b.Fallback), b.Readable, warnings)
+	}
+
+	stdout, stderr, err := runFile(writeTestFile(t, img[:len(img)-0x40]), testRunConfig)
+	if err == nil || err.Error() != "no readable sections" || stdout != "" || !strings.Contains(stderr, "past the end of the file") {
+		t.Errorf("data past the end: run err %v, stdout %q, stderr %q", err, stdout, stderr)
+	}
+}
+
+func TestPEDataPastEndWithOtherData(t *testing.T) {
+	img := buildPE(true, 0x140000000, []testPESection{
+		{name: ".text", data: []byte("code string here\x00")},
+		{name: ".rdata", data: []byte("rdata string\x00")},
+		{name: ".data", data: make([]byte, 0x40)},
+	}, nil)
+
+	b, lines, warnings := parseAndDump(t, img[:len(img)-0x40], peOptions(false))
+
+	if want := []string{"rdata string"}; !reflect.DeepEqual(lines, want) || !b.Readable || len(b.Fallback) != 0 || len(warnings) != 1 {
+		t.Errorf("lines %q, readable %v, fallback %d, warnings %q", lines, b.Readable, len(b.Fallback), warnings)
+	}
+}
+
+// writePESectionOffset sets PointerToRawData of section i of a buildPE image
+// and SizeOfHeaders of its optional header.
+func writePESectionOffset(img []byte, wide bool, i int, off, sizeOfHeaders uint32) {
+	optSize := 224
+	if wide {
+		optSize = 240
+	}
+
+	binary.LittleEndian.PutUint32(img[0x58+60:], sizeOfHeaders)
+	binary.LittleEndian.PutUint32(img[0x58+optSize+40*i+20:], off)
+}
+
+func TestPESectionWithoutFileData(t *testing.T) {
+	tests := []struct {
+		name          string
+		off           uint32
+		sizeOfHeaders uint32
+		skipped       bool
+	}{
+		{"zero offset", 0, 0, true},
+		{"zero offset with headers", 0, 0x200, true},
+		{"offset inside the headers", 0x10, 0x200, true},
+		{"offset without a header size", 0x10, 0, false},
+	}
+
+	for _, test := range tests {
+		for _, wide := range []bool{false, true} {
+			img := buildPE(wide, 0x10000000, []testPESection{
+				{name: ".text", data: []byte("code string here\x00")},
+				{name: ".rdata", data: []byte("rdata string that is long enough\x00")},
+			}, nil)
+
+			copy(img[0x10:], "DOS stub string\x00")
+			writePESectionOffset(img, wide, 1, test.off, test.sizeOfHeaders)
+
+			b, lines, warnings := parseAndDump(t, img, peOptions(false))
+
+			want := []string{"code string here"}
+			if !test.skipped {
+				want = []string{"DOS stub string"}
+			}
+
+			if !reflect.DeepEqual(lines, want) || (len(warnings) == 1) != test.skipped || (len(b.Sections) == 0) != test.skipped {
+				t.Errorf("%s (wide=%v): lines %q, sections %d, warnings %q", test.name, wide, lines, len(b.Sections), warnings)
+			}
+
+			if h := b.Headers[1]; h.Name != ".rdata" || h.Read != "data" {
+				t.Errorf("%s (wide=%v): header %+v", test.name, wide, h)
+			}
+		}
+	}
+
+	// A fallback section without file data is skipped too.
+	img := buildPE(true, 0x140000000, []testPESection{{name: ".text", data: []byte("code string here\x00")}}, nil)
+	writePESectionOffset(img, true, 0, 0, 0x200)
+
+	var warnings []string
+
+	b, err := Parse(img, "auto", func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) })
+	if err != nil || b.Readable || len(b.Fallback) != 0 || len(warnings) != 1 {
+		t.Errorf("fallback without file data: err %v, readable %v, fallback %d, warnings %q", err, b.Readable, len(b.Fallback), warnings)
+	}
+}
+
+func TestPEImportDescriptorsStopAtWrap(t *testing.T) {
+	// The second section covers the top of the address space, so descriptor
+	// RVAs past it wrap around to the first section.
+	newReader := func() *peReader {
+		return &peReader{
+			data: make([]byte, 0x200),
+			secs: []peSection{
+				{rva: 0, vsize: 0x100, rawSize: 0x100, rawOff: 0},
+				{rva: 0xffffff00, vsize: 0x100, rawSize: 0x100, rawOff: 0x100},
+			},
+		}
+	}
+
+	put32 := func(r *peReader, off int, v uint32) { binary.LittleEndian.PutUint32(r.data[off:], v) }
+
+	// Two non-empty import descriptors without a name table end exactly at
+	// the top; a third at RVA 0 names a hint at 0x80.
+	r := newReader()
+	put32(r, 0x1d8+4, 1)
+	put32(r, 0x1ec+4, 1)
+	put32(r, 0x00, 0x40)
+	put32(r, 0x40, 0x80)
+
+	hints := map[uint32]struct{}{}
+	r.walkImports(0xffffffd8, false, 0, hints)
+
+	if len(hints) != 0 {
+		t.Errorf("imports: hints %x after the descriptor RVA wrapped", slices.Sorted(maps.Keys(hints)))
+	}
+
+	r = newReader()
+	put32(r, 0x1c0, 1)
+	put32(r, 0x1e0, 1)
+	put32(r, 0x00, 1)
+	put32(r, 0x10, 0x40)
+	put32(r, 0x40, 0x80)
+
+	r.walkDelayImports(0xffffffc0, false, 0, hints)
+
+	if len(hints) != 0 {
+		t.Errorf("delay imports: hints %x after the descriptor RVA wrapped", slices.Sorted(maps.Keys(hints)))
+	}
+}
+
+func TestRunNoReadableSections(t *testing.T) {
+	path := writeTestFile(t, buildPE(true, 0x140000000, []testPESection{{name: ".reloc", data: []byte("reloc string\x00")}}, nil))
+
+	if stdout, _, err := runFile(path, testRunConfig); err == nil || err.Error() != "no readable sections" || stdout != "" {
+		t.Errorf("dump: err %v, stdout %q", err, stdout)
+	}
+
+	cfg := testRunConfig
+	cfg.printSections = true
+
+	stdout, stderr, err := runFile(path, cfg)
+	if err != nil || !strings.HasPrefix(stdout, ".reloc\t") || stderr != "" {
+		t.Errorf("print sections: err %v, stdout %q, stderr %q", err, stdout, stderr)
+	}
+
+	var out, errOut bytes.Buffer
+
+	if code := runMain([]string{"dump", path}, &out, &errOut); code != 1 || errOut.String() != path+": no readable sections\n" {
+		t.Errorf("runMain dump: exit %d, stderr %q", code, errOut.String())
+	}
+
+	if code := runMain([]string{"dump", "-print-sections", path}, &out, &errOut); code != 0 {
+		t.Errorf("runMain dump -print-sections: exit %d", code)
 	}
 }
 

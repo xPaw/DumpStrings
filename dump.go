@@ -269,10 +269,6 @@ func Parse(data []byte, format string, warn Warner) (*Binary, error) {
 		return nil, fmt.Errorf("failed to parse as %s: %w", format, err)
 	}
 
-	if !b.Readable {
-		return nil, fmt.Errorf("no readable sections")
-	}
-
 	return b, nil
 }
 
