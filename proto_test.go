@@ -1,0 +1,168 @@
+package main
+
+import (
+	"bytes"
+	"testing"
+)
+
+func pbField(tag byte, payload []byte) []byte {
+	return append([]byte{tag, byte(len(payload))}, payload...)
+}
+
+func descriptor(name string) []byte {
+	msg := pbField(0x1a, append(pbField(0x0a, []byte("Thing")), pbField(0x12, pbField(0x0a, []byte("field_name")))...))
+	b := pbField(0x0a, []byte(name))
+	b = append(b, pbField(0x12, []byte("my.pkg"))...)
+
+	return append(b, msg...)
+}
+
+func maskCopy(d []byte) ([]byte, []string) {
+	c := bytes.Clone(d)
+
+	var names []string
+
+	MaskProtobufs(c, func(name []byte, size int) { names = append(names, string(name)) })
+
+	return c, names
+}
+
+func TestMaskProtobufsNulTerminated(t *testing.T) {
+	blob := descriptor("my/thing.proto")
+	data := append([]byte("hello\x00"), blob...)
+	data = append(data, 0)
+	data = append(data, []byte("tail string\x00")...)
+
+	got, names := maskCopy(data)
+	want := bytes.Clone(data)
+	clear(want[6 : 6+len(blob)])
+
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got %q want %q", got, want)
+	}
+
+	if len(names) != 1 || names[0] != "my/thing.proto" {
+		t.Fatalf("names %q", names)
+	}
+}
+
+func TestMaskProtobufsSectionEnd(t *testing.T) {
+	blob := descriptor("a.proto")
+	got, _ := maskCopy(blob)
+
+	if !bytes.Equal(got, make([]byte, len(blob))) {
+		t.Fatalf("not masked: %q", got)
+	}
+}
+
+func TestMaskProtobufsNonNulTerminator(t *testing.T) {
+	data := append(descriptor("a.proto"), 0x0a, 'q')
+	got, names := maskCopy(data)
+
+	if !bytes.Equal(got, data) || len(names) != 0 {
+		t.Fatalf("masked despite non-NUL end: %q", got)
+	}
+}
+
+func TestMaskProtobufsHyphen(t *testing.T) {
+	data := append(descriptor("steam-foo/a_b.proto"), 0)
+	got, names := maskCopy(data)
+
+	if len(names) != 1 || got[0] != 0 {
+		t.Fatalf("not masked: %q", got)
+	}
+}
+
+func TestMaskProtobufsBadName(t *testing.T) {
+	for _, name := range []string{"a b.proto", "A.PROTO", ".proto", "a.protox"} {
+		data := append(descriptor(name), 0)
+		if got, _ := maskCopy(data); !bytes.Equal(got, data) {
+			t.Errorf("%q masked", name)
+		}
+	}
+}
+
+func TestMaskProtobufsTwoByteLength(t *testing.T) {
+	name := bytes.Repeat([]byte("a"), 200)
+	name = append(name, ".proto"...)
+
+	data := []byte{0x0a, byte(len(name)&0x7f) | 0x80, byte(len(name) >> 7)}
+	data = append(data, name...)
+	data = append(data, pbField(0x12, []byte("pkg"))...)
+	data = append(data, 0)
+
+	got, names := maskCopy(data)
+
+	if len(names) != 1 || !bytes.Equal(got, make([]byte, len(data))) {
+		t.Fatalf("not masked: %q", got)
+	}
+}
+
+func TestMaskProtobufsTruncated(t *testing.T) {
+	blob := descriptor("a.proto")
+	data := append(bytes.Clone(blob[:len(blob)-3]), 0)
+	got, _ := maskCopy(data)
+
+	// A truncated trailing field stops the walk before it, and the byte there
+	// is not NUL.
+	if !bytes.Equal(got, data) {
+		t.Fatalf("masked truncated blob: %q", got)
+	}
+
+	data = []byte{0x0a, 20, 'a', '.', 'p', 'r', 'o', 't', 'o'}
+	if got, _ := maskCopy(data); !bytes.Equal(got, data) {
+		t.Fatalf("masked truncated name: %q", got)
+	}
+}
+
+func TestMaskProtobufsGroup(t *testing.T) {
+	// field 5 start-group, field 6 varint inside, field 5 end-group.
+	blob := append(pbField(0x0a, []byte("g.proto")), 0x2b, 0x30, 0x01, 0x2c)
+	data := append(bytes.Clone(blob), 0)
+
+	got, names := maskCopy(data)
+	if len(names) != 1 || !bytes.Equal(got, make([]byte, len(data))) {
+		t.Fatalf("group blob not masked: %q", got)
+	}
+
+	// Mismatched end-group stops before the group; byte there is not NUL.
+	bad := append(pbField(0x0a, []byte("g.proto")), 0x2b, 0x30, 0x01, 0x34, 0)
+	if got, _ := maskCopy(bad); !bytes.Equal(got, bad) {
+		t.Fatalf("masked mismatched group: %q", got)
+	}
+
+	deep := pbField(0x0a, []byte("g.proto"))
+	for range 200 {
+		deep = append(deep, 0x2b)
+	}
+
+	deep = append(deep, 0)
+	if got, _ := maskCopy(deep); !bytes.Equal(got, deep) {
+		t.Fatalf("masked deeply nested group")
+	}
+}
+
+func TestMaskProtobufsSecondField1(t *testing.T) {
+	data := append(descriptor("a.proto"), pbField(0x0a, []byte("b"))...)
+	data = append(data, 0)
+
+	// The walk stops at the second field 1, which is not a NUL.
+	if got, _ := maskCopy(data); !bytes.Equal(got, data) {
+		t.Fatalf("masked: %q", got)
+	}
+}
+
+func TestMaskProtobufsGarbage(t *testing.T) {
+	for _, data := range [][]byte{
+		{0x0a},
+		{0x0a, 0x80},
+		{0x0a, 0x80, 0x80, 'x'},
+		{0x0a, 0xff, 0xff, 0xff},
+		{0x0a, 0x0a, 0x0a, 0x0a, 0x0a},
+		bytes.Repeat([]byte{0x0a, 0x07}, 50),
+	} {
+		if got, _ := maskCopy(data); !bytes.Equal(got, data) {
+			t.Errorf("masked garbage %x", data)
+		}
+	}
+}

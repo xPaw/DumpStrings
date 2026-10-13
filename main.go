@@ -17,7 +17,14 @@ func main() {
 	flag.IntVar(&opts.MinLength, "min-length", 4, "minimum length of a string")
 	flag.IntVar(&opts.SymLength, "sym-length", 10, "maximum length of a string to filter out when the string contains majority of non a-Z characters")
 	flag.BoolVar(&opts.PrintSections, "print-sections", false, "print every section with its type, flags, address, size and how it is read")
+	flag.StringVar(&opts.Protobufs, "protobufs", "mask", "how to treat serialized protobuf descriptors: mask (blank them) or keep")
 	flag.Parse()
+
+	if opts.Protobufs != "mask" && opts.Protobufs != "keep" {
+		fmt.Fprintf(os.Stderr, "invalid -protobufs value %q: want mask or keep\n", opts.Protobufs)
+		flag.Usage()
+		os.Exit(2)
+	}
 
 	if *binaryPath == "" {
 		flag.PrintDefaults()

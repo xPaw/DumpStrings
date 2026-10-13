@@ -78,6 +78,10 @@ type Options struct {
 	SymLength     int
 	Demangle      bool
 	PrintSections bool
+
+	// Protobufs is "mask" to blank serialized protobuf descriptors before
+	// extraction, or "keep" to read them as ordinary data.
+	Protobufs string
 }
 
 // Sink receives each output line, without a trailing newline.
@@ -124,6 +128,10 @@ func splitRuns(buf []byte, fn func(run []byte)) {
 type Dumper struct {
 	opts Options
 	sink Sink
+
+	// OnProto, when set, is called with the name and size of every masked
+	// protobuf descriptor.
+	OnProto func(name []byte, size int)
 }
 
 // DumpSection emits the strings of one section and returns how many lines it
@@ -157,14 +165,35 @@ func (d *Dumper) DumpSection(s Section) int {
 
 // Dump emits the strings of every section, falling back to the fallback
 // sections when the others produce no lines and none of them was truncated.
+// Protobuf descriptors are masked in place in the section data first; the
+// fallback decision is made on the unmasked sections.
 func (d *Dumper) Dump(b *Binary) {
-	lines := 0
+	needFallback := false
 
-	for _, s := range b.Sections {
-		lines += d.DumpSection(s)
+	if len(b.Fallback) > 0 && !b.Truncated {
+		counter := Dumper{opts: d.opts, sink: func(string) {}}
+		lines := 0
+
+		for _, s := range b.Sections {
+			lines += counter.DumpSection(s)
+		}
+
+		needFallback = lines == 0
 	}
 
-	if lines == 0 && !b.Truncated {
+	if d.opts.Protobufs == "mask" {
+		for _, s := range b.Sections {
+			if s.Kind != KindNote {
+				MaskProtobufs(s.Data, d.OnProto)
+			}
+		}
+	}
+
+	for _, s := range b.Sections {
+		d.DumpSection(s)
+	}
+
+	if needFallback {
 		for _, s := range b.Fallback {
 			d.DumpSection(s)
 		}
