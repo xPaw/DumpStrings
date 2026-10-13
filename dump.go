@@ -87,6 +87,11 @@ type Options struct {
 	// Protobufs is "mask" to blank serialized protobuf descriptors before
 	// extraction, or "keep" to read them as ordinary data.
 	Protobufs string
+
+	// Terminated is "on" to apply the end-of-string rule to data sections,
+	// "off" to skip it, or "auto" to apply it unless the file was built by
+	// a toolchain that does not NUL-terminate its strings.
+	Terminated string
 }
 
 // Sink receives each output line, without a trailing newline.
@@ -139,6 +144,9 @@ func splitRuns(buf []byte) iter.Seq2[int, []byte] {
 type Dumper struct {
 	opts Options
 	sink Sink
+
+	// terminated applies the end-of-string rule to data sections.
+	terminated bool
 }
 
 // keeps reports whether a run passes the minimum length and the symbol filter.
@@ -165,10 +173,17 @@ func (d *Dumper) hasLine(s Section) bool {
 // emitted.
 func (d *Dumper) DumpSection(s Section) int {
 	lines := 0
+	ends := newEndRule(s.Data)
+	ruled := d.terminated && s.Kind == KindData
 
 	for off, run := range splitRuns(s.Data) {
 		if to, ok := s.Rewrite[off]; ok && to < off+len(run) {
 			run = run[to-off:]
+			off = to
+		}
+
+		if ruled && !ends.keeps(off, off+len(run)) {
+			continue
 		}
 
 		if !d.keeps(run) {

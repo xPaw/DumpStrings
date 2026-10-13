@@ -18,10 +18,17 @@ func main() {
 	flag.IntVar(&opts.SymLength, "sym-length", 10, "maximum length of a string to filter out when the string contains majority of non a-Z characters")
 	flag.BoolVar(&opts.PrintSections, "print-sections", false, "print every section with its type, flags, address, size and how it is read")
 	flag.StringVar(&opts.Protobufs, "protobufs", "mask", "how to treat serialized protobuf descriptors: mask (blank them) or keep")
+	flag.StringVar(&opts.Terminated, "terminated", "auto", "keep only data section strings that end in a NUL byte or lie in text: auto (off for Go and Rust binaries), on or off")
 	flag.Parse()
 
 	if opts.Protobufs != "mask" && opts.Protobufs != "keep" {
 		fmt.Fprintf(os.Stderr, "invalid -protobufs value %q: want mask or keep\n", opts.Protobufs)
+		flag.Usage()
+		os.Exit(2)
+	}
+
+	if opts.Terminated != "auto" && opts.Terminated != "on" && opts.Terminated != "off" {
+		fmt.Fprintf(os.Stderr, "invalid -terminated value %q: want auto, on or off\n", opts.Terminated)
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -72,7 +79,14 @@ func run(path string, opts Options, out *bufio.Writer) (err error) {
 		return nil
 	}
 
-	d := Dumper{opts: opts, sink: lineSink(out)}
+	// Masking blanks bytes of data in place, so the markers are looked up
+	// before dumping.
+	terminated, toolchain := ResolveTerminated(opts.Terminated, data)
+	if toolchain != "" {
+		fmt.Fprintf(os.Stderr, "%s: note: %s binary, end-of-string rule off\n", path, toolchain)
+	}
+
+	d := Dumper{opts: opts, sink: lineSink(out), terminated: terminated}
 	d.Dump(b)
 
 	return nil
