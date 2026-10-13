@@ -92,16 +92,19 @@ type endRule struct {
 	// start is the offset of the segment whose verdict is text, or -1.
 	start int
 	text  bool
+
+	// nextBad is the offset of the first byte that is not valid UTF-8 text
+	// at or after the start of the last window checked, or -1. Window starts
+	// never decrease, so it holds until a window starts past it.
+	nextBad int
 }
 
 func newEndRule(data []byte) endRule {
-	return endRule{data: data, prevNul: -1, nextNul: -1, start: -1}
+	return endRule{data: data, prevNul: -1, nextNul: -1, start: -1, nextBad: -1}
 }
 
 // keeps reports whether the run data[s:e] is kept: it is followed by a NUL
-// byte or the end of the section, or the NUL-delimited segment around it is
-// text. The delimiting NUL bytes, or the section start and end, must lie
-// within textWindow bytes of the run.
+// byte or the end of the section, or the text around it reads as a string.
 func (r *endRule) keeps(s, e int) bool {
 	d := r.data
 
@@ -118,11 +121,23 @@ func (r *endRule) keeps(s, e int) bool {
 	// A run holds no NUL bytes, so the search resumes at its end.
 	r.scanned = e
 
+	return r.textAround(s, e)
+}
+
+// textAround reports whether the text around the run data[s:e] reads as a
+// string. When the NUL bytes that delimit it, or the section start and end,
+// lie within textWindow bytes of the run, the segment between them must pass
+// isText. Otherwise the window of textWindow bytes on each side, cut short at
+// a delimiting NUL byte, must be valid UTF-8 text.
+func (r *endRule) textAround(s, e int) bool {
+	d := r.data
+	whole := true
+
 	a := 0
 	if r.prevNul >= 0 && r.prevNul >= s-textWindow {
 		a = r.prevNul + 1
 	} else if s > textWindow {
-		return false
+		a, whole = s-textWindow, false
 	}
 
 	if r.nextNul < e {
@@ -134,7 +149,15 @@ func (r *endRule) keeps(s, e int) bool {
 
 	b := r.nextNul
 	if b-e >= textWindow && e+textWindow < len(d) {
-		return false
+		b, whole = e+textWindow, false
+	}
+
+	if !whole {
+		if r.nextBad < a {
+			r.nextBad = firstNonText(d, a)
+		}
+
+		return r.nextBad >= b
 	}
 
 	if a != r.start {
@@ -142,6 +165,37 @@ func (r *endRule) keeps(s, e int) bool {
 	}
 
 	return r.text
+}
+
+// firstNonText returns the offset of the first byte at or after i that is not
+// valid UTF-8 text as isText defines it, or len(d). Up to three continuation
+// bytes at i are skipped, since i may fall inside a multibyte character.
+func firstNonText(d []byte, i int) int {
+	for k := 0; k < 3 && i < len(d) && d[i]&0xC0 == 0x80; k++ {
+		i++
+	}
+
+	for i < len(d) {
+		c := d[i]
+
+		if c < utf8.RuneSelf {
+			if !textControl[c] {
+				return i
+			}
+
+			i++
+			continue
+		}
+
+		r, n := utf8.DecodeRune(d[i:])
+		if r < 0xA0 || (r == utf8.RuneError && n <= 1) {
+			return i
+		}
+
+		i += n
+	}
+
+	return len(d)
 }
 
 // toolchainMarkers are byte strings found only in binaries whose toolchain

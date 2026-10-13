@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // dumpData returns the lines of one section with the end-of-string rule on
@@ -43,9 +44,12 @@ func TestEndRule(t *testing.T) {
 		{"no NUL before within window", long + "\xc3hello world\x80\x00", []string{long}},
 		{"section start and end within window", "hello world\x80tail", []string{"hello world", "tail"}},
 		{"section start at window edge", strings.Repeat("é", textWindow/2) + "hello worldé\x00", []string{"hello world"}},
-		{"section start past window edge", strings.Repeat("é", textWindow/2-1) + "€hello worldé\x00", nil},
+		{"section start past window edge", "\x01\x01" + strings.Repeat("é", textWindow/2-2) + "€hello worldé\x00", nil},
 		{"section end at window edge", "\x00hello world" + strings.Repeat("é", textWindow/2), []string{"hello world"}},
-		{"section end past window edge", "\x00hello world" + strings.Repeat("é", textWindow/2-1) + "€", nil},
+		{"section end past window edge", "\x00hello world" + strings.Repeat("é", textWindow/2-2) + "€\x01\x01", nil},
+		{"UTF-8 window without NUL", strings.Repeat("é", textWindow) + "hello world€" + strings.Repeat("é", textWindow), []string{"hello world"}},
+		{"UTF-8 window cut inside characters", "\x01" + strings.Repeat("€", textWindow/3+1) + "hello world" + strings.Repeat("€", textWindow/3+1) + "\x01", []string{"hello world"}},
+		{"binary in window without NUL", strings.Repeat("é", textWindow) + "hello world\x80" + strings.Repeat("é", textWindow), nil},
 	}
 
 	for _, test := range tests {
@@ -59,8 +63,9 @@ func TestEndRule(t *testing.T) {
 
 func TestEndRuleWindowPerRun(t *testing.T) {
 	// Both runs share one text segment, but the NUL before "last" is
-	// further back than the window.
-	data := []byte("\x00" + strings.Repeat("é", 1500) + "first" + strings.Repeat("é", 600) + "lastéé\x00")
+	// further back than the window, and its window is not valid UTF-8.
+	filler := strings.Repeat("abc\x80", 375)
+	data := []byte("\x00" + filler + "first\x80" + filler + filler + "last\x80\x00")
 
 	got := dumpData(Section{Kind: KindData, Data: data}, true)
 	want := []string{"first"}
@@ -76,6 +81,8 @@ func referenceKeeps(d []byte, s, e int) bool {
 		return true
 	}
 
+	whole := true
+
 	lo := max(0, s-textWindow)
 	a := bytes.LastIndexByte(d[lo:s], 0)
 
@@ -83,7 +90,7 @@ func referenceKeeps(d []byte, s, e int) bool {
 	case a >= 0:
 		a += lo + 1
 	case lo > 0:
-		return false
+		a, whole = lo, false
 	default:
 		a = 0
 	}
@@ -95,12 +102,41 @@ func referenceKeeps(d []byte, s, e int) bool {
 	case b >= 0:
 		b += e
 	case hi < len(d):
-		return false
+		b, whole = hi, false
 	default:
 		b = len(d)
 	}
 
-	return isText(d[a:b])
+	if whole {
+		return isText(d[a:b])
+	}
+
+	return referenceUTF8(d, a, b)
+}
+
+// referenceUTF8 reports whether every character that starts in d[a:b] is
+// valid UTF-8 text, skipping continuation bytes at a.
+func referenceUTF8(d []byte, a, b int) bool {
+	for k := 0; k < 3 && a < b && d[a]&0xC0 == 0x80; k++ {
+		a++
+	}
+
+	for i := a; i < b; {
+		r, n := utf8.DecodeRune(d[i:])
+
+		switch {
+		case r < utf8.RuneSelf:
+			if !textControl[r] {
+				return false
+			}
+		case r < 0xA0, r == utf8.RuneError && n == 1:
+			return false
+		}
+
+		i += n
+	}
+
+	return true
 }
 
 func TestEndRuleMatchesReference(t *testing.T) {
