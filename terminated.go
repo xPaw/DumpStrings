@@ -198,14 +198,38 @@ func firstNonText(d []byte, i int) int {
 	return len(d)
 }
 
-// toolchainMarkers are byte strings found only in binaries whose toolchain
-// stores strings with a length instead of a NUL terminator.
-var toolchainMarkers = []struct {
-	name   string
-	marker []byte
+// toolchains detect binaries whose toolchain stores strings with a length
+// instead of a NUL terminator.
+var toolchains = []struct {
+	name  string
+	match func(data []byte) bool
 }{
-	{"Go", []byte("\xff Go buildinf:")},
-	{"Rust", []byte("/rustc/")},
+	{"Go", hasGoBuildInfo},
+	{"Rust", func(data []byte) bool { return bytes.Contains(data, []byte("/rustc/")) }},
+}
+
+var goBuildInfoMagic = []byte("\xff Go buildinf:")
+
+// hasGoBuildInfo reports whether data holds Go build info: the magic at a
+// 16-byte aligned offset followed by a pointer size of 4 or 8. Unaligned or
+// malformed copies of the magic string, as C programs and the Go linker carry
+// as literals, do not count.
+func hasGoBuildInfo(data []byte) bool {
+	for base := 0; base < len(data); {
+		i := bytes.Index(data[base:], goBuildInfoMagic)
+		if i < 0 {
+			return false
+		}
+
+		off := base + i
+		if off%16 == 0 && off+14 < len(data) && (data[off+14] == 4 || data[off+14] == 8) {
+			return true
+		}
+
+		base = off + 1
+	}
+
+	return false
 }
 
 // ResolveTerminated returns whether the end-of-string rule applies to a file
@@ -219,9 +243,9 @@ func ResolveTerminated(mode string, data []byte) (bool, string) {
 		return false, ""
 	}
 
-	for _, m := range toolchainMarkers {
-		if bytes.Contains(data, m.marker) {
-			return false, m.name
+	for _, t := range toolchains {
+		if t.match(data) {
+			return false, t.name
 		}
 	}
 

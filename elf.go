@@ -203,7 +203,13 @@ func elfNotes(data []byte, align uint64, order binary.ByteOrder, name string, wa
 		namesz := uint64(order.Uint32(data[off:]))
 		descsz := uint64(order.Uint32(data[off+4:]))
 
-		descOff := off + 12 + pad(namesz)
+		if namesz > size-off-12 {
+			warn("%s: note at offset 0x%x runs past the section end", name, off)
+			break
+		}
+
+		// Padding aligns absolute offsets within the section, not lengths.
+		descOff := pad(off + 12 + namesz)
 		if descOff > size || descsz > size-descOff {
 			warn("%s: note at offset 0x%x runs past the section end", name, off)
 			break
@@ -211,7 +217,7 @@ func elfNotes(data []byte, align uint64, order binary.ByteOrder, name string, wa
 
 		descs = append(descs, data[descOff:descOff+descsz])
 
-		off = descOff + pad(descsz)
+		off = pad(descOff + descsz)
 	}
 
 	return descs

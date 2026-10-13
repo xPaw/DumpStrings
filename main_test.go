@@ -134,7 +134,7 @@ func TestRunToolchainMarker(t *testing.T) {
 		wantNote   bool
 	}{
 		{"auto without a marker", ruledOut, "auto", false, false},
-		{"auto with the Go marker", "\xff Go buildinf:\x00" + ruledOut, "auto", true, true},
+		{"auto with the Go marker", "\xff Go buildinf:\x08\x00" + ruledOut, "auto", true, true},
 		{"auto with the Rust marker", "/rustc/0123abcd\x00" + ruledOut, "auto", true, true},
 		{"on with the Go marker", "\xff Go buildinf:\x00" + ruledOut, "on", false, false},
 		{"off without a marker", ruledOut, "off", true, false},

@@ -68,19 +68,21 @@ func TestFileSlice(t *testing.T) {
 	}
 }
 
-// note encodes one ELF note record with the given alignment.
+// note encodes one ELF note record with the given alignment, padding so the
+// name, descriptor and next record start at aligned offsets.
 func note(name, desc string, align int) []byte {
-	pad := func(b []byte) []byte {
-		for len(b)%align != 0 {
-			b = append(b, 0)
+	var buf bytes.Buffer
+	pad := func() {
+		for buf.Len()%align != 0 {
+			buf.WriteByte(0)
 		}
-		return b
 	}
 
-	var buf bytes.Buffer
 	binary.Write(&buf, binary.LittleEndian, [3]uint32{uint32(len(name)), uint32(len(desc)), 1})
-	buf.Write(pad([]byte(name)))
-	buf.Write(pad([]byte(desc)))
+	buf.WriteString(name)
+	pad()
+	buf.WriteString(desc)
+	pad()
 
 	return buf.Bytes()
 }
@@ -98,8 +100,19 @@ func TestElfNotes(t *testing.T) {
 		}
 	}
 
+	// An 8-aligned property note has a 4-byte name and pads it to the next
+	// absolute 8-byte offset.
+	props := append(note("GNU\x00", "\x02\x00\x00\xc0\x04\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00", 8), note("FDO\x00", "{\"type\":\"deb\"}\x00", 8)...)
+	descs := elfNotes(props, 8, binary.LittleEndian, "n", func(string, ...any) {
+		t.Errorf("aligned property note: unexpected warning")
+	})
+
+	if len(descs) != 2 || len(descs[0]) != 16 || !isPrintableNote(descs[1]) {
+		t.Errorf("aligned property note: descs %q", descs)
+	}
+
 	warned := false
-	descs := elfNotes(note("GNU\x00", "abcdefgh", 4)[:20], 4, binary.LittleEndian, "n", func(string, ...any) { warned = true })
+	descs = elfNotes(note("GNU\x00", "abcdefgh", 4)[:20], 4, binary.LittleEndian, "n", func(string, ...any) { warned = true })
 
 	if len(descs) != 0 || !warned {
 		t.Errorf("truncated note: descs %q, warned %v", descs, warned)

@@ -216,7 +216,13 @@ func TestEndRuleImportRewrite(t *testing.T) {
 
 func TestResolveTerminated(t *testing.T) {
 	plain := []byte("\x7fELF plain C binary\x00")
-	goBin := append(bytes.Clone(plain), "\xff Go buildinf:\x08\x02"...)
+	aligned := func(b []byte) []byte {
+		return append(bytes.Clone(b), make([]byte, (16-len(b)%16)%16)...)
+	}
+	goBin := append(aligned(plain), "\xff Go buildinf:\x08\x02"...)
+	unaligned := append(append(aligned(plain), 0), "\xff Go buildinf:\x08\x02"...)
+	literal := append(aligned(plain), "\xff Go buildinf:\x001.21.0"...)
+	literalFirst := append(aligned(literal), "\xff Go buildinf:\x04\x02"...)
 	rustBin := append(bytes.Clone(plain), "/rustc/90b35a6239c3d8bdabc530a6a0816f7ff89a0aaf/library/core\x00"...)
 
 	tests := []struct {
@@ -228,6 +234,9 @@ func TestResolveTerminated(t *testing.T) {
 		{"auto", plain, true, ""},
 		{"auto", goBin, false, "Go"},
 		{"auto", rustBin, false, "Rust"},
+		{"auto", unaligned, true, ""},
+		{"auto", literal, true, ""},
+		{"auto", literalFirst, false, "Go"},
 		{"on", goBin, true, ""},
 		{"off", plain, false, ""},
 	}
