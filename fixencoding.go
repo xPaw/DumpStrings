@@ -2,13 +2,10 @@ package main
 
 import (
 	"bytes"
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"golang.org/x/text/encoding"
@@ -35,42 +32,47 @@ func detectBOMEncoding(head []byte) (encoding.Encoding, string) {
 	return nil, ""
 }
 
-// fixFileEncoding rewrites a UTF-16/UTF-32 file as trimmed UTF-8 with a single
-// trailing newline. It returns the detected encoding name, or "" if the file
-// was left untouched.
-func fixFileEncoding(path string) (string, error) {
+// readBOMFile reads a file that starts with a UTF-16 or UTF-32 byte order
+// mark, and returns its bytes, encoding and permissions. Only the first bytes
+// of any other file are read, and its encoding is nil.
+func readBOMFile(path string) ([]byte, encoding.Encoding, string, fs.FileMode, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return nil, nil, "", 0, err
 	}
+
+	defer f.Close()
 
 	var head [4]byte
 	n, err := io.ReadFull(f, head[:])
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		f.Close()
-		return "", err
+		return nil, nil, "", 0, err
 	}
 
 	enc, name := detectBOMEncoding(head[:n])
 	if enc == nil {
-		f.Close()
-		return "", nil
+		return nil, nil, "", 0, nil
 	}
 
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
-		return "", err
+		return nil, nil, "", 0, err
 	}
 
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		f.Close()
-		return "", err
-	}
-
-	data, err := io.ReadAll(f)
-	f.Close()
+	data, err := io.ReadAll(io.MultiReader(bytes.NewReader(head[:n]), f))
 	if err != nil {
+		return nil, nil, "", 0, err
+	}
+
+	return data, enc, name, info.Mode().Perm(), nil
+}
+
+// fixFileEncoding rewrites a UTF-16/UTF-32 file as trimmed UTF-8 with a single
+// trailing newline. It returns the detected encoding name, or "" if the file
+// was left untouched.
+func fixFileEncoding(path string) (string, error) {
+	data, enc, name, perm, err := readBOMFile(path)
+	if enc == nil || err != nil {
 		return "", err
 	}
 
@@ -83,56 +85,16 @@ func fixFileEncoding(path string) (string, error) {
 	decoded = bytes.TrimSpace(decoded)
 	decoded = append(decoded, '\n')
 
-	return name, replaceFile(path, decoded, info.Mode().Perm())
-}
-
-// replaceFile writes data next to path and renames it over the original so a
-// failed write never leaves a truncated file.
-func replaceFile(path string, data []byte, perm fs.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".fix-encoding-*")
-	if err != nil {
-		return err
-	}
-
-	tmpName := tmp.Name()
-
-	_, err = tmp.Write(data)
-
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-
-	if err == nil {
-		err = os.Chmod(tmpName, perm)
-	}
-
-	if err == nil {
-		err = os.Rename(tmpName, path)
-	}
-
-	if err != nil {
-		os.Remove(tmpName)
-	}
-
-	return err
+	return name, replaceFile(path, decoded, perm)
 }
 
 // runFixEncoding implements the fix-encoding subcommand and returns the exit code.
-func runFixEncoding(args []string) int {
-	flags := flag.NewFlagSet("fix-encoding", flag.ContinueOnError)
+func runFixEncoding(args []string, stdout, stderr io.Writer) int {
+	flags := newFlagSet("fix-encoding", "Usage: DumpStrings fix-encoding [-ext txt,...] <path>...", stderr)
 	extList := flags.String("ext", "txt", "comma separated file extensions to process in directories")
 
-	flags.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: DumpStrings fix-encoding [-ext txt,...] <path>...")
-		flags.PrintDefaults()
-	}
-
-	if err := flags.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-
-		return 2
+	if code, ok := parseFlags(flags, args); !ok {
+		return code
 	}
 
 	if flags.NArg() == 0 {
@@ -148,21 +110,39 @@ func runFixEncoding(args []string) int {
 		}
 	}
 
-	exitCode := 0
+	hasExt := func(name string) bool {
+		dot := strings.LastIndexByte(name, '.')
+		if dot < 0 {
+			return false
+		}
 
-	process := func(path string) {
+		_, ok := exts[name[dot+1:]]
+
+		return ok
+	}
+
+	process := func(path string) error {
 		name, err := fixFileEncoding(path)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: %s: %v\n", path, err)
+			fmt.Fprintf(stderr, "Warning: %s: %v\n", path, err)
 		} else if name != "" {
-			fmt.Printf(" %s - %s\n", name, path)
+			fmt.Fprintf(stdout, " %s - %s\n", name, path)
 		}
+
+		return nil
 	}
+
+	warn := func(err error) error {
+		fmt.Fprintf(stderr, "Warning: %v\n", err)
+		return nil
+	}
+
+	exitCode := 0
 
 	for _, root := range flags.Args() {
 		info, err := os.Stat(root)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			fmt.Fprintf(stderr, "Error: %v\n", err)
 			exitCode = 1
 			continue
 		}
@@ -172,45 +152,8 @@ func runFixEncoding(args []string) int {
 			continue
 		}
 
-		err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
-
-				if d != nil && d.IsDir() {
-					return fs.SkipDir
-				}
-
-				return nil
-			}
-
-			if d.IsDir() {
-				if path != root && (d.Name() == ".git" || d.Name() == "node_modules") {
-					return fs.SkipDir
-				}
-
-				return nil
-			}
-
-			if !d.Type().IsRegular() {
-				return nil
-			}
-
-			name := d.Name()
-			dot := strings.LastIndexByte(name, '.')
-
-			if dot < 0 {
-				return nil
-			}
-
-			if _, ok := exts[name[dot+1:]]; ok {
-				process(path)
-			}
-
-			return nil
-		})
-
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+		if err := walkFiles(root, hasExt, process, warn); err != nil {
+			warn(err)
 		}
 	}
 

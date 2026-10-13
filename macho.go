@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"debug/macho"
+	"encoding/binary"
 	"fmt"
 )
 
@@ -48,16 +49,16 @@ func machoCpuName(cpu macho.Cpu) string {
 
 // machoPathCommands are the load commands whose lc_str, at bytes 8..12 of the
 // command, names a dylib, an rpath or the dynamic linker.
-var machoPathCommands = map[uint32]bool{
-	0xc:        true, // LC_LOAD_DYLIB
-	0xd:        true, // LC_ID_DYLIB
-	0xe:        true, // LC_LOAD_DYLINKER
-	0xf:        true, // LC_ID_DYLINKER
-	0x20:       true, // LC_LAZY_LOAD_DYLIB
-	0x80000018: true, // LC_LOAD_WEAK_DYLIB
-	0x8000001c: true, // LC_RPATH
-	0x8000001f: true, // LC_REEXPORT_DYLIB
-	0x80000023: true, // LC_LOAD_UPWARD_DYLIB
+var machoPathCommands = map[macho.LoadCmd]bool{
+	macho.LoadCmdDylib:    true, // LC_LOAD_DYLIB
+	0xd:                   true, // LC_ID_DYLIB
+	0xe:                   true, // LC_LOAD_DYLINKER
+	macho.LoadCmdDylinker: true, // LC_ID_DYLINKER
+	0x20:                  true, // LC_LAZY_LOAD_DYLIB
+	0x80000018:            true, // LC_LOAD_WEAK_DYLIB
+	macho.LoadCmdRpath:    true, // LC_RPATH
+	0x8000001f:            true, // LC_REEXPORT_DYLIB
+	0x80000023:            true, // LC_LOAD_UPWARD_DYLIB
 }
 
 // addMachOLoadStrings adds the dylib, rpath and dynamic linker paths of one
@@ -68,7 +69,7 @@ func addMachOLoadStrings(b *Binary, f *macho.File, prefix string) {
 
 	for _, l := range f.Loads {
 		raw := l.Raw()
-		if len(raw) < 12 || !machoPathCommands[f.ByteOrder.Uint32(raw)] {
+		if len(raw) < 12 || !machoPathCommands[macho.LoadCmd(f.ByteOrder.Uint32(raw))] {
 			continue
 		}
 
@@ -92,20 +93,12 @@ func addMachOLoadStrings(b *Binary, f *macho.File, prefix string) {
 		return
 	}
 
-	name := prefix + "load commands"
-	b.Headers = append(b.Headers, SectionHeader{
-		Name: name,
+	b.add(SectionHeader{
+		Name: prefix + "load commands",
 		Type: fmt.Sprintf("paths=%d", count),
 		Size: uint64(len(data)),
 		Read: KindStrings.String(),
-	})
-
-	b.Readable++
-	b.Sections = append(b.Sections, Section{
-		Name: name,
-		Kind: KindStrings,
-		Data: data,
-	})
+	}, Section{Data: data, Mask: true}, true)
 }
 
 // parseMachO selects a fixed set of sections and the symbol string table of a
@@ -158,56 +151,27 @@ func addMachO(b *Binary, f *macho.File, data []byte, prefix string, warn Warner)
 		}
 
 		h.Read = kind.String()
-		b.Headers = append(b.Headers, h)
 
 		sdata := fileSlice(data, uint64(s.Offset), s.Size, h.Name, warn)
-		if len(sdata) == 0 {
-			continue
-		}
-
-		b.Readable++
-		b.Sections = append(b.Sections, Section{
-			Name: h.Name,
-			Kind: kind,
-			Data: sdata,
-			Addr: s.Addr,
-		})
+		b.add(h, Section{Data: sdata, Mask: true, EndRule: kind == KindData}, len(sdata) > 0)
 	}
 
 	addMachOLoadStrings(b, f, prefix)
 
 	// debug/macho leaves Symtab.SymtabCmd empty, so the command is decoded
-	// from its raw bytes: cmd, cmdsize, symoff, nsyms, stroff, strsize.
-	if f.Symtab == nil || len(f.Symtab.LoadBytes) < 24 {
-		return
-	}
-
-	cmd := f.Symtab.LoadBytes
-	nsyms := f.ByteOrder.Uint32(cmd[12:])
-	stroff := f.ByteOrder.Uint32(cmd[16:])
-	strsize := f.ByteOrder.Uint32(cmd[20:])
-
-	if strsize == 0 {
+	// from its raw bytes.
+	var cmd macho.SymtabCmd
+	if f.Symtab == nil || binary.Read(bytes.NewReader(f.Symtab.LoadBytes), f.ByteOrder, &cmd) != nil || cmd.Strsize == 0 {
 		return
 	}
 
 	h := SectionHeader{
 		Name: prefix + "LC_SYMTAB",
-		Type: fmt.Sprintf("stroff=0x%x symbols=%d", stroff, nsyms),
-		Size: uint64(strsize),
+		Type: fmt.Sprintf("stroff=0x%x symbols=%d", cmd.Stroff, cmd.Nsyms),
+		Size: uint64(cmd.Strsize),
 		Read: KindStrings.String(),
 	}
-	b.Headers = append(b.Headers, h)
 
-	sdata := fileSlice(data, uint64(stroff), uint64(strsize), h.Name, warn)
-	if len(sdata) == 0 {
-		return
-	}
-
-	b.Readable++
-	b.Sections = append(b.Sections, Section{
-		Name: h.Name,
-		Kind: KindStrings,
-		Data: sdata,
-	})
+	sdata := fileSlice(data, uint64(cmd.Stroff), uint64(cmd.Strsize), h.Name, warn)
+	b.add(h, Section{Data: sdata, Mask: true}, len(sdata) > 0)
 }

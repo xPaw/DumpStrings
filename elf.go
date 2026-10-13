@@ -113,46 +113,35 @@ func parseELF(data []byte, warn Warner) (*Binary, error) {
 			h.Read += fmt.Sprintf("/u%d", width*8)
 		}
 
-		b.Headers = append(b.Headers, h)
-
 		sdata := fileSlice(data, s.Offset, s.FileSize, s.Name, warn)
-		if len(sdata) == 0 {
-			continue
+		sect := Section{Data: sdata, Mask: true, EndRule: kind == KindData}
+
+		switch {
+		case kind == KindNote:
+			sect = Section{Data: elfNoteText(sdata, s.Addralign, f.ByteOrder, s.Name, warn)}
+		case width != 0:
+			sect = Section{Data: decodeWide(sdata, width, f.ByteOrder)}
 		}
 
-		b.Readable++
-
-		if kind != KindNote {
-			sect := Section{
-				Name:    s.Name,
-				Kind:    kind,
-				Data:    sdata,
-				Addr:    s.Addr,
-				EntSize: s.Entsize,
-			}
-
-			if width != 0 {
-				sect.Data = decodeWide(sdata, width, f.ByteOrder)
-				sect.Wide = true
-			}
-
-			b.Sections = append(b.Sections, sect)
-			continue
-		}
-
-		for _, desc := range elfNotes(sdata, s.Addralign, f.ByteOrder, s.Name, warn) {
-			if isPrintableNote(desc) {
-				b.Sections = append(b.Sections, Section{
-					Name: s.Name,
-					Kind: KindNote,
-					Data: desc,
-					Addr: s.Addr,
-				})
-			}
-		}
+		b.add(h, sect, len(sdata) > 0)
 	}
 
 	return b, nil
+}
+
+// elfNoteText joins the printable descriptors of a note section, each ended
+// by a NUL byte. A section whose descriptors are all binary gives no bytes.
+func elfNoteText(data []byte, align uint64, order binary.ByteOrder, name string, warn Warner) []byte {
+	var text []byte
+
+	for _, desc := range elfNotes(data, align, order, name, warn) {
+		if isPrintableNote(desc) {
+			text = append(text, desc...)
+			text = append(text, 0)
+		}
+	}
+
+	return text
 }
 
 // decodeWide narrows a section of 16 or 32-bit code units to one byte per

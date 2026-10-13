@@ -1,6 +1,7 @@
 package main
 
 import (
+	"debug/elf"
 	"encoding/binary"
 	"reflect"
 	"testing"
@@ -8,12 +9,14 @@ import (
 
 type testElfSection struct {
 	name    string
+	typ     elf.SectionType // zero means SHT_PROGBITS
 	flags   uint64
 	entsize uint64
 	data    []byte
 }
 
-// buildElf64 assembles a minimal ELF64 file with the given PROGBITS sections.
+// buildElf64 assembles a minimal ELF64 file with the given sections after the
+// null section; the section name table is appended last.
 func buildElf64(order binary.ByteOrder, secs []testElfSection) []byte {
 	shstr := []byte{0}
 	nameOff := make([]int, len(secs))
@@ -56,10 +59,15 @@ func buildElf64(order binary.ByteOrder, secs []testElfSection) []byte {
 	}
 
 	for i, s := range secs {
-		put(i+1, uint32(nameOff[i]), 1, s.flags, uint64(offs[i]), uint64(len(s.data)), s.entsize)
+		typ := s.typ
+		if typ == 0 {
+			typ = elf.SHT_PROGBITS
+		}
+
+		put(i+1, uint32(nameOff[i]), uint32(typ), s.flags, uint64(offs[i]), uint64(len(s.data)), s.entsize)
 	}
 
-	put(len(secs)+1, uint32(shstrName), 3, 0, uint64(shstrOff), uint64(len(shstr)), 0)
+	put(len(secs)+1, uint32(shstrName), uint32(elf.SHT_STRTAB), 0, uint64(shstrOff), uint64(len(shstr)), 0)
 
 	copy(out, "\x7fELF")
 	out[4] = 2
@@ -105,21 +113,6 @@ func asciiUnits(s string) []uint32 {
 	return u
 }
 
-func dumpLines(t *testing.T, data []byte) []string {
-	t.Helper()
-
-	b, err := Parse(data, "", func(string, ...any) {})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var lines []string
-	d := &Dumper{opts: Options{MinLength: 4, MaskProtobufs: true}, sink: func(l string) { lines = append(lines, l) }}
-	d.Dump(b)
-
-	return lines
-}
-
 func TestElfWideStrings(t *testing.T) {
 	for _, order := range []binary.ByteOrder{binary.LittleEndian, binary.BigEndian} {
 		for _, width := range []int{2, 4} {
@@ -138,11 +131,11 @@ func TestElfWideStrings(t *testing.T) {
 			wide = append(wide, 'x')
 
 			f := buildElf64(order, []testElfSection{
-				{".rodata.str", 0x32, uint64(width), wide},
-				{".rodata.str1.1", 0x32, 1, []byte("bytes\x00")},
+				{name: ".rodata.str", flags: 0x32, entsize: uint64(width), data: wide},
+				{name: ".rodata.str1.1", flags: 0x32, entsize: 1, data: []byte("bytes\x00")},
 			})
 
-			got := dumpLines(t, f)
+			_, got, _ := parseAndDump(t, f, Options{MinLength: 4, MaskProtobufs: true})
 			want := []string{"hello", "split", "here", `a\tb c`, "tail", "bytes"}
 
 			if !reflect.DeepEqual(got, want) {
@@ -154,14 +147,15 @@ func TestElfWideStrings(t *testing.T) {
 
 func TestElfWideSectionHeader(t *testing.T) {
 	data := wideUnits(binary.LittleEndian, 2, asciiUnits("abcdef")...)
-	f := buildElf64(binary.LittleEndian, []testElfSection{{".rodata.str2.2", 0x32, 2, data}})
+	f := buildElf64(binary.LittleEndian, []testElfSection{{name: ".rodata.str2.2", flags: 0x32, entsize: 2, data: data}})
 
-	b, err := Parse(f, "", func(string, ...any) {})
+	b, err := Parse(f, "auto", func(string, ...any) {})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if len(b.Sections) != 1 || !b.Sections[0].Wide || b.Sections[0].Kind != KindStrings || len(b.Sections[0].Data) != 6 {
+	// A narrowed section is not masked and takes no end-of-string rule.
+	if len(b.Sections) != 1 || b.Sections[0].Mask || b.Sections[0].EndRule || string(b.Sections[0].Data) != "abcdef" {
 		t.Fatalf("unexpected sections: %+v", b.Sections)
 	}
 

@@ -4,11 +4,36 @@ import (
 	"bytes"
 	"debug/elf"
 	"encoding/binary"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 )
+
+// testDumper returns a Dumper with opts that appends every line to lines.
+func testDumper(opts Options, lines *[]string) *Dumper {
+	return &Dumper{opts: opts, sink: func(l string) { *lines = append(*lines, l) }}
+}
+
+// parseAndDump parses data, detecting its format, and dumps it with opts,
+// returning the binary, the lines and the warnings.
+func parseAndDump(t *testing.T, data []byte, opts Options) (*Binary, []string, []string) {
+	t.Helper()
+
+	var warnings []string
+
+	b, err := Parse(data, "auto", func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var lines []string
+
+	testDumper(opts, &lines).Dump(b)
+
+	return b, lines, warnings
+}
 
 func TestSplitRuns(t *testing.T) {
 	var got []string
@@ -31,6 +56,9 @@ func TestDetectFormat(t *testing.T) {
 		{"\x7fELF\x02\x01", "elf"},
 		{"MZ\x90\x00", "pe"},
 		{"\xcf\xfa\xed\xfe", "macho"},
+		{"\xce\xfa\xed\xfe", "macho"},
+		{"\xfe\xed\xfa\xce", "macho"},
+		{"\xfe\xed\xfa\xcf", "macho"},
 		{"\xca\xfe\xba\xbe\x00\x00\x00\x02", "macho"},
 		{"\xca\xfe\xba\xbe\x00\x00\x00\x34", ""},
 		{"\xca\xfe\xba\xbe", ""},
@@ -43,6 +71,22 @@ func TestDetectFormat(t *testing.T) {
 		if got != test.want || (err == nil) != (test.want != "") {
 			t.Errorf("DetectFormat(%q) = %q, %v, want %q", test.in, got, err, test.want)
 		}
+	}
+}
+
+func TestParseFormat(t *testing.T) {
+	data := buildElf64(binary.LittleEndian, []testElfSection{{name: ".rodata", data: []byte("some string\x00")}})
+
+	if _, err := Parse(data, "elf", func(string, ...any) {}); err != nil {
+		t.Errorf("elf: %v", err)
+	}
+
+	if _, err := Parse(data, "pe", func(string, ...any) {}); err == nil {
+		t.Error("ELF parsed as PE")
+	}
+
+	if _, err := Parse(data, "", func(string, ...any) {}); err == nil {
+		t.Error("empty format accepted")
 	}
 }
 
@@ -119,90 +163,57 @@ func TestElfNotes(t *testing.T) {
 	}
 }
 
-// buildELF returns a little-endian ELF64 file with the given sections after
-// the null section; the section name table is appended last.
-func buildELF(sections []elf.Section64, contents [][]byte, names []string) []byte {
-	shstrtab := []byte{0}
-	for i, name := range append(names, ".shstrtab") {
-		if i < len(sections) {
-			sections[i].Name = uint32(len(shstrtab))
-		} else {
-			sections = append(sections, elf.Section64{Name: uint32(len(shstrtab)), Type: uint32(elf.SHT_STRTAB), Addralign: 1})
-			contents = append(contents, nil)
+func TestParseELF(t *testing.T) {
+	notes := append(note("GNU\x00", "\x01\x02\x03\x04abcdefgh", 4), note("FDO\x00", "{\"os\":\"linux\"}\x00", 4)...)
+	notes = append(notes, note("PKG\x00", "second note\x00\x00\x00\x00\x00", 4)...)
+
+	data := buildElf64(binary.LittleEndian, []testElfSection{
+		{name: ".rodata", data: []byte("first rodata\x00")},
+		{name: ".rodata", data: []byte("second rodata\x00")},
+		{name: ".note.package", typ: elf.SHT_NOTE, data: notes},
+		{name: ".data.rel.ro", data: []byte("relocated data\x00")},
+	})
+
+	b, got, warnings := parseAndDump(t, data, Options{MinLength: 4, SymLength: 10})
+
+	want := []string{"first rodata", "second rodata", "{\"os\":\"linux\"}", "second note"}
+	if !reflect.DeepEqual(got, want) || len(warnings) != 0 {
+		t.Errorf("lines = %q, want %q (warnings %q)", got, want, warnings)
+	}
+
+	// The note descriptors are joined into one section that is not masked
+	// and takes no end-of-string rule.
+	if len(b.Sections) != 3 || string(b.Sections[2].Data) != "{\"os\":\"linux\"}\x00\x00second note\x00\x00\x00\x00\x00\x00" {
+		t.Fatalf("sections %+v", b.Sections)
+	}
+
+	for i, s := range b.Sections {
+		if wantRules := i < 2; s.Mask != wantRules || s.EndRule != wantRules {
+			t.Errorf("section %d: mask %v, end rule %v", i, s.Mask, s.EndRule)
 		}
-		shstrtab = append(shstrtab, name...)
-		shstrtab = append(shstrtab, 0)
 	}
-	contents[len(contents)-1] = shstrtab
-
-	var body bytes.Buffer
-	off := uint64(64)
-	for i, c := range contents {
-		sections[i].Off = off
-		sections[i].Size = uint64(len(c))
-		body.Write(c)
-		off += uint64(len(c))
-	}
-
-	hdr := elf.Header64{
-		Type:      uint16(elf.ET_DYN),
-		Machine:   uint16(elf.EM_X86_64),
-		Version:   uint32(elf.EV_CURRENT),
-		Shoff:     off,
-		Ehsize:    64,
-		Shentsize: 64,
-		Shnum:     uint16(len(sections) + 1),
-		Shstrndx:  uint16(len(sections)),
-	}
-	copy(hdr.Ident[:], "\x7fELF\x02\x01\x01")
-
-	var buf bytes.Buffer
-	binary.Write(&buf, binary.LittleEndian, hdr)
-	buf.Write(body.Bytes())
-	binary.Write(&buf, binary.LittleEndian, elf.Section64{})
-	binary.Write(&buf, binary.LittleEndian, sections)
-
-	return buf.Bytes()
 }
 
-func TestParseELF(t *testing.T) {
-	progbits := elf.Section64{Type: uint32(elf.SHT_PROGBITS), Flags: uint64(elf.SHF_ALLOC), Addralign: 1}
-	notes := elf.Section64{Type: uint32(elf.SHT_NOTE), Flags: uint64(elf.SHF_ALLOC), Addralign: 4}
+func TestParseELFBinaryNotesAreReadable(t *testing.T) {
+	data := buildElf64(binary.LittleEndian, []testElfSection{
+		{name: ".note.gnu.build-id", typ: elf.SHT_NOTE, data: note("GNU\x00", "\x01\x02\x03\x04\x05\x06\x07\x08", 4)},
+	})
 
-	data := buildELF(
-		[]elf.Section64{progbits, progbits, notes, progbits},
-		[][]byte{
-			[]byte("first rodata\x00"),
-			[]byte("second rodata\x00"),
-			append(note("GNU\x00", "\x01\x02\x03\x04abcdefgh", 4), note("FDO\x00", "{\"os\":\"linux\"}\x00", 4)...),
-			[]byte("relocated data\x00"),
-		},
-		[]string{".rodata", ".rodata", ".note.package", ".data.rel.ro"},
-	)
+	b, lines, warnings := parseAndDump(t, data, Options{MinLength: 4, SymLength: 10})
 
-	b, err := Parse(data, "", func(format string, args ...any) { t.Errorf("unexpected warning: "+format, args...) })
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var got []string
-	d := Dumper{opts: Options{MinLength: 4, SymLength: 10}, sink: func(line string) { got = append(got, line) }}
-	d.Dump(b)
-
-	want := []string{"first rodata", "second rodata", "{\"os\":\"linux\"}"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("lines = %q, want %q", got, want)
+	if !b.Readable || len(lines) != 0 || len(warnings) != 0 {
+		t.Errorf("readable %v, lines %q, warnings %q", b.Readable, lines, warnings)
 	}
 }
 
 func TestParseELFWithoutSections(t *testing.T) {
-	data := buildELF(nil, nil, nil)
+	data := buildElf64(binary.LittleEndian, nil)
 	copy(data[0x28:0x30], make([]byte, 8)) // e_shoff
 	data[0x3C] = 0                         // e_shnum
 	data[0x3E] = 0                         // e_shstrndx
 
 	warned := false
-	if _, err := Parse(data, "", func(string, ...any) { warned = true }); err == nil || !warned {
+	if _, err := Parse(data, "auto", func(string, ...any) { warned = true }); err == nil || !warned {
 		t.Errorf("Parse without section headers: err %v, warned %v", err, warned)
 	}
 }
@@ -230,43 +241,45 @@ func TestHasLine(t *testing.T) {
 	}
 }
 
-func TestDumpMasksOnlyPlainSections(t *testing.T) {
+func TestDumpMasksOnlyMaskedSections(t *testing.T) {
 	blob := append(descriptor("x/y.proto"), 0)
+	orig := bytes.Clone(blob)
 
-	count := func(mask bool, kinds ...SectionKind) int {
+	count := func(maskProtobufs bool, masks ...bool) int {
 		b := &Binary{}
-		for _, kind := range kinds {
-			b.Sections = append(b.Sections, Section{Kind: kind, Data: bytes.Clone(blob), Wide: kind == KindStrings})
+		for _, mask := range masks {
+			b.Sections = append(b.Sections, Section{Data: blob, Mask: mask})
 		}
 
-		lines := 0
-		d := Dumper{opts: Options{MinLength: 4, SymLength: 10, MaskProtobufs: mask}, sink: func(string) { lines++ }}
-		d.Dump(b)
+		var lines []string
+		testDumper(Options{MinLength: 4, SymLength: 10, MaskProtobufs: maskProtobufs}, &lines).Dump(b)
 
-		return lines
+		return len(lines)
 	}
 
-	one := count(false, KindData)
+	one := count(false, true)
 	if one == 0 {
 		t.Fatal("descriptor produced no lines")
 	}
 
-	// The note and the narrowed (Wide) section are not masked.
-	if got := count(true, KindData, KindNote, KindStrings); got != 2*one {
+	if got := count(true, true, false, false); got != 2*one {
 		t.Errorf("masked: %d lines, want %d", got, 2*one)
 	}
 
-	if got := count(false, KindData, KindNote, KindStrings); got != 3*one {
+	if got := count(false, true, false, false); got != 3*one {
 		t.Errorf("kept: %d lines, want %d", got, 3*one)
+	}
+
+	if !bytes.Equal(blob, orig) {
+		t.Error("masking modified the section data")
 	}
 }
 
 func TestDumpDoesNotMaskByDefault(t *testing.T) {
-	b := &Binary{Sections: []Section{{Kind: KindData, Data: append(descriptor("x/y.proto"), 0)}}}
+	b := &Binary{Sections: []Section{{Data: append(descriptor("x/y.proto"), 0), Mask: true, EndRule: true}}}
 
 	var got []string
-	d := Dumper{opts: Options{MinLength: 4, SymLength: 10}, sink: func(l string) { got = append(got, l) }}
-	d.Dump(b)
+	testDumper(Options{MinLength: 4, SymLength: 10}, &got).Dump(b)
 
 	if !slices.ContainsFunc(got, func(l string) bool { return strings.Contains(l, "x/y.proto") }) {
 		t.Errorf("descriptor name missing from %q", got)
@@ -286,18 +299,5 @@ func TestPrintSections(t *testing.T) {
 		".bss\tNOBITS WA\taddr=0x3000\tsize=0x10\tread=-\n"
 	if out.String() != want {
 		t.Errorf("PrintSections = %q, want %q", out.String(), want)
-	}
-}
-
-func TestLineSink(t *testing.T) {
-	var out strings.Builder
-
-	sink := lineSink(&out)
-	sink("first")
-	sink("")
-	sink("with\ttab")
-
-	if want := "first\n\nwith\ttab\n"; out.String() != want {
-		t.Errorf("output = %q, want %q", out.String(), want)
 	}
 }

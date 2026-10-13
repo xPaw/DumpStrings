@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,48 +10,18 @@ import (
 	"time"
 )
 
-func writeTree(t *testing.T, files map[string]string) string {
+// writeConf writes a dedupe config to a temporary file and returns its path.
+func writeConf(t *testing.T, conf string) string {
 	t.Helper()
 
-	root := t.TempDir()
-
-	for name, content := range files {
-		full := filepath.Join(root, filepath.FromSlash(name))
-
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-
-		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	return root
+	return filepath.Join(writeTree(t, map[string]string{"strings_dedupe.conf": conf}), "strings_dedupe.conf")
 }
 
-func readTree(t *testing.T, root, name string) string {
+func runConf(t *testing.T, root, conf string, dry bool) (int, string, string) {
 	t.Helper()
-
-	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return string(data)
-}
-
-func runConf(t *testing.T, root, conf string, dry bool, hook func(map[string]*dedupeFile)) (int, string, string) {
-	t.Helper()
-
-	confPath := filepath.Join(t.TempDir(), "strings_dedupe.conf")
-
-	if err := os.WriteFile(confPath, []byte(conf), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	var out, errOut bytes.Buffer
-	code := dedupeRun(root, confPath, dry, &out, &errOut, hook)
+	code := dedupeRun(root, writeConf(t, conf), dry, &out, &errOut)
 
 	return code, out.String(), errOut.String()
 }
@@ -81,13 +52,18 @@ func TestParseErrors(t *testing.T) {
 	root := t.TempDir()
 	var out, errOut bytes.Buffer
 
-	if code := dedupeRun(root, filepath.Join(root, "missing.conf"), false, &out, &errOut, nil); code != 1 {
+	if code := dedupeRun(root, filepath.Join(root, "missing.conf"), false, &out, &errOut); code != 1 {
 		t.Errorf("unreadable config: exit %d, want 1", code)
 	}
 
-	code, _, _ := runConf(t, root, "ref a\ntarget b\nref c\n", false, nil)
+	code, _, _ := runConf(t, root, "ref a\ntarget b\nref c\n", false)
 	if code != 1 {
 		t.Errorf("bad config: exit %d, want 1", code)
+	}
+
+	steps, err := parseDedupeConfig([]byte("ref\ta\ntarget *\ntarget *\n"))
+	if err != nil || len(steps) != 1 || steps[0].refs[0] != "a" || !steps[0].star {
+		t.Errorf("tab separator and repeated target *: %+v %v", steps, err)
 	}
 }
 
@@ -122,7 +98,7 @@ func TestOrderingSemantics(t *testing.T) {
 	})
 
 	conf := "ref engine_strings.txt\ntarget *\n\nref mod_strings.txt\ntarget tool_strings.txt\ntarget engine_strings.txt\n"
-	code, out, errOut := runConf(t, root, conf, false, nil)
+	code, out, errOut := runConf(t, root, conf, false)
 
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
@@ -156,7 +132,7 @@ func TestSharedLineKeptInEarlierRef(t *testing.T) {
 
 	conf := "ref r1_strings.txt\ntarget r2_strings.txt\ntarget t_strings.txt\n\nref r2_strings.txt\ntarget t_strings.txt\n"
 
-	if code, _, errOut := runConf(t, root, conf, false, nil); code != 0 {
+	if code, _, errOut := runConf(t, root, conf, false); code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
 
@@ -176,7 +152,7 @@ func TestMissingRefsAndTargets(t *testing.T) {
 	})
 
 	conf := "ref nope_strings.txt\ntarget a_strings.txt\n\nref a_strings.txt\nref nope2_strings.txt\ntarget b_strings.txt\ntarget gone_strings.txt\n"
-	code, out, errOut := runConf(t, root, conf, false, nil)
+	code, out, errOut := runConf(t, root, conf, false)
 
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
@@ -223,7 +199,7 @@ func TestStarSkipsGitAndNodeModules(t *testing.T) {
 
 	conf := "ref r_strings.txt\nref DumpSource2/.stringsignore\ntarget *\n"
 
-	if code, _, errOut := runConf(t, root, conf, false, nil); code != 0 {
+	if code, _, errOut := runConf(t, root, conf, false); code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
 
@@ -271,7 +247,7 @@ func TestByteOrderSort(t *testing.T) {
 		"t_strings.txt": "\xc3\xa9\nz\nZ\n\xff\ngone\n\x01\na\n\xf0\x9f\x98\x80\n\xee\x80\x80\n",
 	})
 
-	if code, _, errOut := runConf(t, root, "ref r_strings.txt\ntarget t_strings.txt\n", false, nil); code != 0 {
+	if code, _, errOut := runConf(t, root, "ref r_strings.txt\ntarget t_strings.txt\n", false); code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
 
@@ -295,7 +271,7 @@ func TestOnlyChangedFilesWritten(t *testing.T) {
 		}
 	}
 
-	if code, _, errOut := runConf(t, root, "ref r_strings.txt\ntarget *\n", false, nil); code != 0 {
+	if code, _, errOut := runConf(t, root, "ref r_strings.txt\ntarget *\n", false); code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
 
@@ -314,11 +290,8 @@ func TestOnlyChangedFilesWritten(t *testing.T) {
 		t.Errorf("unchanged file content: %q", got)
 	}
 
-	entries, _ := os.ReadDir(root)
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".tmp") {
-			t.Errorf("leftover temporary file %s", e.Name())
-		}
+	if entries, _ := os.ReadDir(root); len(entries) != 3 {
+		t.Errorf("%d files left in the tree, want 3", len(entries))
 	}
 }
 
@@ -328,7 +301,7 @@ func TestDryRun(t *testing.T) {
 		"t_strings.txt": "a\nb\n",
 	})
 
-	code, out, _ := runConf(t, root, "ref r_strings.txt\ntarget *\n", true, nil)
+	code, out, _ := runConf(t, root, "ref r_strings.txt\ntarget *\n", true)
 	if code != 0 || !strings.Contains(out, "1 targets changed, 1 lines removed") {
 		t.Errorf("exit %d output %q", code, out)
 	}
@@ -345,7 +318,8 @@ func TestSelfCheckFailure(t *testing.T) {
 		"u_strings.txt":   "c\n",
 	}
 
-	hooks := map[string]func(map[string]*dedupeFile){
+	changes := map[string]func(map[string]*dedupeFile){
+		"none": func(map[string]*dedupeFile) {},
 		"line lost": func(f map[string]*dedupeFile) {
 			f["t_strings.txt"].lines = []string{"c"}
 		},
@@ -354,18 +328,17 @@ func TestSelfCheckFailure(t *testing.T) {
 		},
 	}
 
-	for name, hook := range hooks {
-		root := writeTree(t, files)
-		code, _, errOut := runConf(t, root, "ref ref_strings.txt\ntarget *\n", false, hook)
-
-		if code != 2 || !strings.Contains(errOut, "self-check") {
-			t.Errorf("%s: exit %d stderr %q", name, code, errOut)
+	for name, change := range changes {
+		job, err := loadDedupeJob(writeTree(t, files), writeConf(t, "ref ref_strings.txt\ntarget *\n"))
+		if err != nil {
+			t.Fatal(err)
 		}
 
-		for n, content := range files {
-			if got := readTree(t, root, n); got != content {
-				t.Errorf("%s: %s was written: %q", name, n, got)
-			}
+		job.apply(io.Discard)
+		change(job.files)
+
+		if got, want := job.unchanged(), name == "none"; got != want {
+			t.Errorf("%s: unchanged = %v, want %v", name, got, want)
 		}
 	}
 }
@@ -377,13 +350,16 @@ func TestSelfCheckCoversRefOnlyFiles(t *testing.T) {
 		"t_strings.txt": "a\nb\n",
 	})
 
-	hook := func(f map[string]*dedupeFile) {
-		f["ignore"].lines = nil
+	job, err := loadDedupeJob(root, writeConf(t, "ref r_strings.txt\nref ignore\ntarget *\n"))
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	code, _, _ := runConf(t, root, "ref r_strings.txt\nref ignore\ntarget *\n", false, hook)
-	if code != 2 {
-		t.Errorf("exit %d, want 2", code)
+	job.apply(io.Discard)
+	job.files["ignore"].lines = nil
+
+	if job.unchanged() {
+		t.Error("lost lines of a reference-only file passed the self-check")
 	}
 }
 
@@ -398,15 +374,15 @@ func TestRunDedupeFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := runDedupe([]string{"-bogus", conf}); code != 2 {
+	if code := runDedupe([]string{"-bogus", conf}, io.Discard, io.Discard); code != 2 {
 		t.Errorf("bad flag: %d", code)
 	}
 
-	if code := runDedupe(nil); code != 2 {
+	if code := runDedupe(nil, io.Discard, io.Discard); code != 2 {
 		t.Errorf("no config: %d", code)
 	}
 
-	if code := runDedupe([]string{"-root", root, "-dry-run", conf}); code != 0 {
+	if code := runDedupe([]string{"-root", root, "-dry-run", conf}, io.Discard, io.Discard); code != 0 {
 		t.Errorf("dry run: %d", code)
 	}
 
@@ -414,7 +390,7 @@ func TestRunDedupeFlags(t *testing.T) {
 		t.Errorf("dry run wrote: %q", got)
 	}
 
-	if code := runDedupe([]string{"-root", root, conf}); code != 0 {
+	if code := runDedupe([]string{"-root", root, conf}, io.Discard, io.Discard); code != 0 {
 		t.Errorf("run: %d", code)
 	}
 

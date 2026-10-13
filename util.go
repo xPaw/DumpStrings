@@ -1,10 +1,87 @@
 package main
 
 import (
-	"github.com/ianlancetaylor/demangle"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"unicode"
+
+	"github.com/ianlancetaylor/demangle"
 )
+
+// sortedUnique sorts lines in byte order and drops duplicates, in place.
+func sortedUnique(lines []string) []string {
+	slices.Sort(lines)
+
+	return slices.Compact(lines)
+}
+
+// walkFiles calls fn with the path of every regular file under root whose name
+// match accepts. Directories named .git or node_modules below root are skipped
+// and symbolic links are not followed. A walk error goes to onErr: when onErr
+// returns an error the walk stops with it, otherwise the entry is skipped.
+func walkFiles(root string, match func(name string) bool, fn func(path string) error, onErr func(error) error) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if err := onErr(err); err != nil {
+				return err
+			}
+
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+
+			return nil
+		}
+
+		if d.IsDir() {
+			if path != root && (d.Name() == ".git" || d.Name() == "node_modules") {
+				return fs.SkipDir
+			}
+
+			return nil
+		}
+
+		if d.Type().IsRegular() && match(d.Name()) {
+			return fn(path)
+		}
+
+		return nil
+	})
+}
+
+// replaceFile writes data next to path and renames it over the original so a
+// failed write never leaves a truncated file.
+func replaceFile(path string, data []byte, perm fs.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".DumpStrings-*")
+	if err != nil {
+		return err
+	}
+
+	tmpName := tmp.Name()
+
+	_, err = tmp.Write(data)
+
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+
+	if err == nil {
+		err = os.Chmod(tmpName, perm)
+	}
+
+	if err == nil {
+		err = os.Rename(tmpName, path)
+	}
+
+	if err != nil {
+		os.Remove(tmpName)
+	}
+
+	return err
+}
 
 var escapeReplacer = strings.NewReplacer(
 	"\t", "\\t",
@@ -19,8 +96,9 @@ var escapeReplacer = strings.NewReplacer(
 const maxDemangledLengthPow = 16
 
 // UtilDemangle demangles an Itanium symbol, returning name unchanged when it
-// cannot be demangled. A leading '.' is kept, and a trailing "@VERSION",
-// "@@VERSION" or "@plt" is split off before demangling and re-appended.
+// cannot be demangled. A leading '.' is kept and a leading '$' is dropped, and
+// a trailing "@VERSION", "@@VERSION" or "@plt" is split off before demangling
+// and re-appended.
 func UtilDemangle(name string) (out string) {
 	defer func() {
 		if recover() != nil {
@@ -31,8 +109,10 @@ func UtilDemangle(name string) (out string) {
 	sym := name
 	prefix := ""
 
-	if len(sym) > 0 && (sym[0] == '.' || sym[0] == '$') {
-		prefix = sym[:1]
+	switch {
+	case strings.HasPrefix(sym, "."):
+		prefix, sym = ".", sym[1:]
+	case strings.HasPrefix(sym, "$"):
 		sym = sym[1:]
 	}
 
@@ -50,10 +130,6 @@ func UtilDemangle(name string) (out string) {
 	result, err := demangle.ToString(sym, demangle.LLVMStyle, demangle.MaxLength(maxDemangledLengthPow))
 	if err != nil || len(result) >= 1<<maxDemangledLengthPow {
 		return name
-	}
-
-	if prefix == "$" {
-		prefix = ""
 	}
 
 	return prefix + result + suffix

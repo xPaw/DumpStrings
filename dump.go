@@ -2,13 +2,17 @@ package main
 
 import (
 	"bytes"
+	"debug/elf"
+	"debug/macho"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"iter"
+	"slices"
 )
 
-// SectionKind tells how the bytes of a section were laid out by the toolchain.
+// SectionKind tells how the bytes of a section were laid out by the toolchain,
+// which decides how a parser reads it.
 type SectionKind int
 
 const (
@@ -16,7 +20,7 @@ const (
 	KindData SectionKind = iota
 	// KindStrings is a string table or a section of NUL-terminated strings.
 	KindStrings
-	// KindNote is a printable ELF note descriptor.
+	// KindNote is an ELF note section, read for its printable descriptors.
 	KindNote
 	// KindFallback is code read only when nothing else produced a line.
 	KindFallback
@@ -37,16 +41,16 @@ func (k SectionKind) String() string {
 	return fmt.Sprintf("kind%d", int(k))
 }
 
-// Section is a byte range of the binary selected for string extraction.
+// Section is a byte range of the binary selected for string extraction, with
+// the rules that apply to it.
 type Section struct {
-	Name    string
-	Kind    SectionKind
-	Data    []byte
-	Addr    uint64
-	EntSize uint64
+	Data []byte
 
-	// Wide marks a section that was narrowed from 16 or 32-bit code units.
-	Wide bool
+	// Mask lets -mask-protobufs blank serialized protobuf descriptors.
+	Mask bool
+
+	// EndRule applies the end-of-string rule, when it is on, to the runs.
+	EndRule bool
 
 	// Rewrite maps the offset of a run start to the offset the run is emitted
 	// from instead; the end of the run is unchanged.
@@ -65,35 +69,38 @@ type SectionHeader struct {
 // Binary is the parsed view of a file: every section header, the sections to
 // read, and the sections read only when the others produce no lines.
 type Binary struct {
-	Format   string
 	Headers  []SectionHeader
 	Sections []Section
 	Fallback []Section
 
-	// Readable counts the selected sections that had bytes to read, including
-	// note sections whose descriptors were all binary.
-	Readable int
+	// Readable is set when a selected section had bytes in the file, even
+	// if none of them are read, as with a note section whose descriptors
+	// are all binary.
+	Readable bool
+}
 
-	// Truncated is set when a selected section runs past the end of the
-	// file; the fallback sections are then not read.
-	Truncated bool
+// add records the header of a section and, when ok, the section read from
+// it, which makes the binary readable.
+func (b *Binary) add(h SectionHeader, s Section, ok bool) {
+	b.Headers = append(b.Headers, h)
+
+	if ok {
+		b.Sections = append(b.Sections, s)
+		b.Readable = true
+	}
 }
 
 // Options controls how strings are extracted and filtered.
 type Options struct {
-	Format        string
-	MinLength     int
-	SymLength     int
-	Demangle      bool
-	PrintSections bool
+	MinLength int
+	SymLength int
+	Demangle  bool
 
 	// MaskProtobufs blanks serialized protobuf descriptors before extraction.
 	MaskProtobufs bool
 
-	// Terminated is "on" to apply the end-of-string rule to data sections,
-	// "off" to skip it, or "auto" to apply it unless the file was built by
-	// a toolchain that does not NUL-terminate its strings.
-	Terminated string
+	// Terminated applies the end-of-string rule to the sections that take it.
+	Terminated bool
 }
 
 // Sink receives each output line, without a trailing newline.
@@ -146,9 +153,6 @@ func splitRuns(buf []byte) iter.Seq2[int, []byte] {
 type Dumper struct {
 	opts Options
 	sink Sink
-
-	// terminated applies the end-of-string rule to data sections.
-	terminated bool
 }
 
 // keeps reports whether a run passes the minimum length and the symbol filter.
@@ -171,14 +175,18 @@ func (d *Dumper) hasLine(s Section) bool {
 	return false
 }
 
-// DumpSection emits the strings of one section and returns how many lines it
-// emitted.
-func (d *Dumper) DumpSection(s Section) int {
-	lines := 0
+// DumpSection emits the strings of one section.
+func (d *Dumper) DumpSection(s Section) {
 	ends := newEndRule(s.Data)
-	ruled := d.terminated && s.Kind == KindData
+	ruled := d.opts.Terminated && s.EndRule
 
 	for off, run := range splitRuns(s.Data) {
+		// A rewrite only shortens a run, and the end-of-string rule does not
+		// depend on the runs it skips.
+		if len(run) < d.opts.MinLength {
+			continue
+		}
+
 		if to, ok := s.Rewrite[off]; ok && to < off+len(run) {
 			run = run[to-off:]
 			off = to
@@ -199,39 +207,19 @@ func (d *Dumper) DumpSection(s Section) int {
 		}
 
 		d.sink(str)
-		lines++
 	}
-
-	return lines
 }
 
-// Dump emits the strings of every section, falling back to the fallback
-// sections when the others produce no lines and none of them was truncated.
-// Protobuf descriptors are masked in place in the section data first; the
-// fallback decision is made on the unmasked sections.
+// Dump emits the strings of every section, then of the fallback sections when
+// the unmasked runs of the others produce no lines.
 func (d *Dumper) Dump(b *Binary) {
-	needFallback := false
-
-	if len(b.Fallback) > 0 && !b.Truncated {
-		needFallback = true
-
-		for _, s := range b.Sections {
-			if d.hasLine(s) {
-				needFallback = false
-				break
-			}
-		}
-	}
-
-	if d.opts.MaskProtobufs {
-		for _, s := range b.Sections {
-			if s.Kind != KindNote && !s.Wide {
-				MaskProtobufs(s.Data, nil)
-			}
-		}
-	}
+	needFallback := len(b.Fallback) > 0 && !slices.ContainsFunc(b.Sections, d.hasLine)
 
 	for _, s := range b.Sections {
+		if d.opts.MaskProtobufs && s.Mask {
+			s.Data = MaskProtobufs(s.Data)
+		}
+
 		d.DumpSection(s)
 	}
 
@@ -254,9 +242,9 @@ func PrintSections(w io.Writer, b *Binary) {
 	}
 }
 
-// Parse detects the format of data, unless format is set, and parses it.
+// Parse detects the format of data when format is "auto", and parses it.
 func Parse(data []byte, format string, warn Warner) (*Binary, error) {
-	if format == "" {
+	if format == "auto" {
 		var err error
 		if format, err = DetectFormat(data); err != nil {
 			return nil, err
@@ -281,11 +269,9 @@ func Parse(data []byte, format string, warn Warner) (*Binary, error) {
 		return nil, fmt.Errorf("failed to parse as %s: %w", format, err)
 	}
 
-	if b.Readable == 0 {
+	if !b.Readable {
 		return nil, fmt.Errorf("no readable sections")
 	}
-
-	b.Format = format
 
 	return b, nil
 }
@@ -296,17 +282,16 @@ func DetectFormat(data []byte) (string, error) {
 		return "", fmt.Errorf("file too small to detect its format (%d bytes)", len(data))
 	}
 
+	be, le := binary.BigEndian.Uint32(data), binary.LittleEndian.Uint32(data)
+
 	switch {
-	case bytes.HasPrefix(data, []byte("\x7fELF")):
+	case bytes.HasPrefix(data, []byte(elf.ELFMAG)):
 		return "elf", nil
 	case bytes.HasPrefix(data, []byte("MZ")):
 		return "pe", nil
 	case isFatMachO(data):
 		return "macho", nil
-	case bytes.HasPrefix(data, []byte{0xFE, 0xED, 0xFA, 0xCE}),
-		bytes.HasPrefix(data, []byte{0xFE, 0xED, 0xFA, 0xCF}),
-		bytes.HasPrefix(data, []byte{0xCE, 0xFA, 0xED, 0xFE}),
-		bytes.HasPrefix(data, []byte{0xCF, 0xFA, 0xED, 0xFE}):
+	case be == macho.Magic32, be == macho.Magic64, le == macho.Magic32, le == macho.Magic64:
 		return "macho", nil
 	}
 
@@ -317,7 +302,7 @@ func DetectFormat(data []byte) (string, error) {
 // files share the magic but hold their major version (45 or more) where the
 // fat header holds the arch count.
 func isFatMachO(data []byte) bool {
-	if len(data) < 8 || !bytes.HasPrefix(data, []byte{0xCA, 0xFE, 0xBA, 0xBE}) {
+	if len(data) < 8 || binary.BigEndian.Uint32(data) != macho.MagicFat {
 		return false
 	}
 

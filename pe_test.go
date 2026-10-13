@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"debug/pe"
 	"encoding/binary"
-	"fmt"
+	"maps"
 	"reflect"
-	"sort"
+	"slices"
 	"testing"
 )
 
@@ -53,18 +53,6 @@ func flatImage(n int) *peReader {
 		data: make([]byte, n),
 		secs: []peSection{{rva: 0, vsize: uint32(n), rawSize: uint32(n), rawOff: 0}},
 	}
-}
-
-func sortedKeys(m map[uint32]struct{}) []uint32 {
-	var keys []uint32
-
-	for k := range m {
-		keys = append(keys, k)
-	}
-
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-
-	return keys
 }
 
 func TestImportDirectories(t *testing.T) {
@@ -116,7 +104,7 @@ func TestImportDirectories(t *testing.T) {
 		r.walkDelayImports(0x200, wide, base, hints)
 
 		want := []uint32{0x1000, 0x1100, 0x1200, 0x1300, 0x1400}
-		if got := sortedKeys(hints); !reflect.DeepEqual(got, want) {
+		if got := slices.Sorted(maps.Keys(hints)); !reflect.DeepEqual(got, want) {
 			t.Errorf("wide=%v: hints = %x, want %x", wide, got, want)
 		}
 	}
@@ -174,8 +162,7 @@ func TestImportRewrites(t *testing.T) {
 func TestDumpSectionRewrite(t *testing.T) {
 	var got []string
 
-	d := Dumper{opts: Options{MinLength: 4, SymLength: 10}, sink: func(l string) { got = append(got, l) }}
-	d.DumpSection(Section{
+	testDumper(Options{MinLength: 4, SymLength: 10}, &got).DumpSection(Section{
 		Data:    []byte("\x00&?Name\x00\x01$Other\x00zz\x00"),
 		Rewrite: map[int]int{1: 3, 9: 10, 18: 20},
 	})
@@ -292,28 +279,10 @@ func peImportData(wide bool, base uint64, rva uint32, delayVA bool) []byte {
 	return d
 }
 
-// parseAndDump parses data and dumps every section, returning the binary, the
-// lines and the warnings.
-func parseAndDump(t *testing.T, data []byte, terminated bool) (*Binary, []string, []string) {
-	t.Helper()
-
-	var warnings []string
-
-	b, err := Parse(data, "", func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) })
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var lines []string
-
-	d := &Dumper{
-		opts:       Options{MinLength: 4, SymLength: 10, MaskProtobufs: true},
-		sink:       func(l string) { lines = append(lines, l) },
-		terminated: terminated,
-	}
-	d.Dump(b)
-
-	return b, lines, warnings
+// peOptions are the options of the PE tests, with the end-of-string rule on
+// or off.
+func peOptions(terminated bool) Options {
+	return Options{MinLength: 4, SymLength: 10, MaskProtobufs: true, Terminated: terminated}
 }
 
 func TestPESectionSelection(t *testing.T) {
@@ -326,15 +295,25 @@ func TestPESectionSelection(t *testing.T) {
 			{name: ".rdata", data: []byte("rdata string one\x00")},
 		}, nil)
 
-		b, lines, warnings := parseAndDump(t, img, false)
+		b, lines, warnings := parseAndDump(t, img, peOptions(false))
 
 		want := []string{"data string one", "data string two", "rdata string one"}
 		if !reflect.DeepEqual(lines, want) {
 			t.Errorf("wide=%v: lines = %q, want %q", wide, lines, want)
 		}
 
-		if len(warnings) != 0 || b.Readable != 3 || len(b.Fallback) != 1 {
-			t.Errorf("wide=%v: warnings %q, readable %d, fallback %d", wide, warnings, b.Readable, len(b.Fallback))
+		if len(warnings) != 0 || !b.Readable || len(b.Sections) != 2 || len(b.Fallback) != 1 {
+			t.Errorf("wide=%v: warnings %q, readable %v, sections %d, fallback %d", wide, warnings, b.Readable, len(b.Sections), len(b.Fallback))
+		}
+
+		for _, s := range b.Sections {
+			if !s.Mask || !s.EndRule {
+				t.Errorf("wide=%v: data section mask %v, end rule %v", wide, s.Mask, s.EndRule)
+			}
+		}
+
+		if f := b.Fallback[0]; f.Mask || f.EndRule || f.Rewrite != nil {
+			t.Errorf("wide=%v: fallback section %+v", wide, f)
 		}
 
 		var reads []string
@@ -354,7 +333,7 @@ func TestPEVirtualSizeClamp(t *testing.T) {
 		{name: ".data", data: []byte("kept string\x00PADDING bytes after\x00"), vsize: 12},
 	}, nil)
 
-	_, lines, _ := parseAndDump(t, img, false)
+	_, lines, _ := parseAndDump(t, img, peOptions(false))
 
 	if want := []string{"kept string"}; !reflect.DeepEqual(lines, want) {
 		t.Errorf("lines = %q, want %q", lines, want)
@@ -382,7 +361,7 @@ func TestPETextFallback(t *testing.T) {
 		for _, wide := range []bool{false, true} {
 			img := buildPE(wide, 0x10000000, []testPESection{text, {name: ".rdata", data: test.data}}, nil)
 
-			if _, lines, _ := parseAndDump(t, img, test.terminated); !reflect.DeepEqual(lines, test.want) {
+			if _, lines, _ := parseAndDump(t, img, peOptions(test.terminated)); !reflect.DeepEqual(lines, test.want) {
 				t.Errorf("%s (wide=%v): lines = %q, want %q", test.name, wide, lines, test.want)
 			}
 		}
@@ -395,16 +374,24 @@ func TestPETruncatedDataSkipsFallback(t *testing.T) {
 		{name: ".data", data: make([]byte, 0x40)},
 	}, nil)
 
-	b, lines, warnings := parseAndDump(t, img, false)
+	b, lines, warnings := parseAndDump(t, img, peOptions(false))
 
-	if want := []string{"code string here"}; !reflect.DeepEqual(lines, want) || b.Truncated || len(warnings) != 0 {
-		t.Errorf("intact: lines %q, truncated %v, warnings %q", lines, b.Truncated, warnings)
+	if want := []string{"code string here"}; !reflect.DeepEqual(lines, want) || len(b.Fallback) != 1 || len(warnings) != 0 {
+		t.Errorf("intact: lines %q, fallback %d, warnings %q", lines, len(b.Fallback), warnings)
 	}
 
-	b, lines, warnings = parseAndDump(t, img[:len(img)-0x20], false)
+	b, lines, warnings = parseAndDump(t, img[:len(img)-0x20], peOptions(false))
 
-	if len(lines) != 0 || !b.Truncated || len(warnings) != 1 {
-		t.Errorf("truncated: lines %q, truncated %v, warnings %q", lines, b.Truncated, warnings)
+	if len(lines) != 0 || len(b.Sections) != 1 || len(b.Fallback) != 0 || len(warnings) != 1 {
+		t.Errorf("truncated: lines %q, sections %d, fallback %d, warnings %q", lines, len(b.Sections), len(b.Fallback), warnings)
+	}
+
+	// With the data section wholly past the end of the file, the fallback
+	// section still makes the binary readable.
+	b, lines, warnings = parseAndDump(t, img[:len(img)-0x40], peOptions(false))
+
+	if len(lines) != 0 || len(b.Sections) != 0 || len(b.Fallback) != 0 || !b.Readable || len(warnings) != 1 {
+		t.Errorf("data past the end: lines %q, sections %d, fallback %d, readable %v, warnings %q", lines, len(b.Sections), len(b.Fallback), b.Readable, warnings)
 	}
 }
 
@@ -454,11 +441,11 @@ func TestPEImports(t *testing.T) {
 			secs = append(secs, peSection{s.VirtualAddress, s.VirtualSize, s.Size, s.Offset})
 		}
 
-		if got := sortedKeys(peImportHints(img, f, secs)); !reflect.DeepEqual(got, test.wantHints) {
+		if got := slices.Sorted(maps.Keys(peImportHints(img, f, secs))); !reflect.DeepEqual(got, test.wantHints) {
 			t.Errorf("%s: hints = %x, want %x", test.name, got, test.wantHints)
 		}
 
-		if _, lines, _ := parseAndDump(t, img, false); !reflect.DeepEqual(lines, test.want) {
+		if _, lines, _ := parseAndDump(t, img, peOptions(false)); !reflect.DeepEqual(lines, test.want) {
 			t.Errorf("%s: lines = %q, want %q", test.name, lines, test.want)
 		}
 	}
@@ -479,7 +466,7 @@ func TestDelayImportsSkipUnusableDescriptors(t *testing.T) {
 	hints := map[uint32]struct{}{}
 	r.walkDelayImports(0x100, false, 0x400000, hints)
 
-	if got, want := sortedKeys(hints), []uint32{0x900}; !reflect.DeepEqual(got, want) {
+	if got, want := slices.Sorted(maps.Keys(hints)), []uint32{0x900}; !reflect.DeepEqual(got, want) {
 		t.Errorf("hints = %x, want %x", got, want)
 	}
 }

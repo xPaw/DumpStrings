@@ -240,7 +240,8 @@ func importRewrites(hints map[uint32]struct{}, addr uint64, n int) map[int]int {
 }
 
 // parsePE selects every .data and .rdata section, and every .text section as
-// the fallback.
+// the fallback. The fallback is dropped when a data section runs past the end
+// of the file, since its missing bytes may hold the lines.
 func parsePE(data []byte, warn Warner) (*Binary, error) {
 	f, err := pe.NewFile(bytes.NewReader(data))
 	if err != nil {
@@ -254,8 +255,8 @@ func parsePE(data []byte, warn Warner) (*Binary, error) {
 		secs = append(secs, peSection{s.VirtualAddress, s.VirtualSize, s.Size, s.Offset})
 	}
 
-	var hints map[uint32]struct{}
-	hintsDone := false
+	hints := peImportHints(data, f, secs)
+	truncated := false
 
 	for _, s := range f.Sections {
 		h := SectionHeader{
@@ -283,7 +284,6 @@ func parsePE(data []byte, warn Warner) (*Binary, error) {
 		}
 
 		h.Read = kind.String()
-		b.Headers = append(b.Headers, h)
 
 		// Bytes past VirtualSize are file alignment padding.
 		size := s.Size
@@ -291,36 +291,34 @@ func parsePE(data []byte, warn Warner) (*Binary, error) {
 			size = s.VirtualSize
 		}
 
-		sect := Section{
-			Name: s.Name,
-			Kind: kind,
-			Data: fileSlice(data, uint64(s.Offset), uint64(size), s.Name, warn),
-			Addr: uint64(s.VirtualAddress),
-		}
+		sdata := fileSlice(data, uint64(s.Offset), uint64(size), s.Name, warn)
+		ok := len(sdata) > 0
 
-		if kind == KindData && uint64(len(sect.Data)) < uint64(size) {
-			b.Truncated = true
-		}
+		if kind == KindFallback {
+			b.Headers = append(b.Headers, h)
 
-		if len(sect.Data) == 0 {
+			if ok {
+				b.Fallback = append(b.Fallback, Section{Data: sdata})
+				b.Readable = true
+			}
+
 			continue
 		}
 
-		b.Readable++
-
-		if kind == KindData {
-			if !hintsDone {
-				hints, hintsDone = peImportHints(data, f, secs), true
-			}
-
-			sect.Rewrite = importRewrites(hints, sect.Addr, len(sect.Data))
+		if uint64(len(sdata)) < uint64(size) {
+			truncated = true
 		}
 
-		if kind == KindFallback {
-			b.Fallback = append(b.Fallback, sect)
-		} else {
-			b.Sections = append(b.Sections, sect)
-		}
+		b.add(h, Section{
+			Data:    sdata,
+			Mask:    true,
+			EndRule: true,
+			Rewrite: importRewrites(hints, uint64(s.VirtualAddress), len(sdata)),
+		}, ok)
+	}
+
+	if truncated {
+		b.Fallback = nil
 	}
 
 	return b, nil

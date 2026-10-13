@@ -9,8 +9,6 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
-	"slices"
-	"sort"
 )
 
 const usageText = `Usage: DumpStrings <command> [arguments]
@@ -39,9 +37,9 @@ func runMain(args []string, stdout, stderr io.Writer) int {
 	case "dump":
 		return runDump(args[1:], stdout, stderr)
 	case "dedupe":
-		return runDedupe(args[1:])
+		return runDedupe(args[1:], stdout, stderr)
 	case "fix-encoding":
-		return runFixEncoding(args[1:])
+		return runFixEncoding(args[1:], stdout, stderr)
 	case "version":
 		fmt.Fprintf(stdout, "DumpStrings %s\n%s\n", buildVersion(), runtime.Version())
 		return 0
@@ -93,32 +91,60 @@ func buildVersion() string {
 	return revision
 }
 
-// runDump implements `dump [flags] <binary>` and returns the exit code.
-func runDump(args []string, stdout, stderr io.Writer) int {
-	var opts Options
-
-	flags := flag.NewFlagSet("dump", flag.ContinueOnError)
+// newFlagSet returns the flag set of a subcommand, which prints the usage line
+// and then the flag defaults to stderr.
+func newFlagSet(name, usage string, stderr io.Writer) *flag.FlagSet {
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: DumpStrings dump [flags] <binary>")
+		fmt.Fprintln(stderr, usage)
 		flags.PrintDefaults()
 	}
 
-	format := flags.String("format", "auto", "binary format: auto, pe, elf or macho")
+	return flags
+}
+
+// parseFlags parses the flags of a subcommand. When parsing ends the command
+// it returns false and the exit code: 0 for -h, 2 for a bad flag.
+func parseFlags(flags *flag.FlagSet, args []string) (int, bool) {
+	err := flags.Parse(args)
+
+	switch {
+	case err == nil:
+		return 0, true
+	case errors.Is(err, flag.ErrHelp):
+		return 0, false
+	}
+
+	return 2, false
+}
+
+// dumpConfig holds the dump flags that choose how the file is parsed and how
+// its lines are printed.
+type dumpConfig struct {
+	format        string
+	terminated    string
+	printSections bool
+	sorted        bool
+}
+
+// runDump implements `dump [flags] <binary>` and returns the exit code.
+func runDump(args []string, stdout, stderr io.Writer) int {
+	var opts Options
+	var cfg dumpConfig
+
+	flags := newFlagSet("dump", "Usage: DumpStrings dump [flags] <binary>", stderr)
+	flags.StringVar(&cfg.format, "format", "auto", "binary format: auto, pe, elf or macho")
 	flags.BoolVar(&opts.Demangle, "demangle", true, "demangle C++ symbols into their original source identifiers")
 	flags.IntVar(&opts.MinLength, "min-length", 4, "minimum length of a string")
 	flags.IntVar(&opts.SymLength, "sym-length", 10, "maximum length of a string to filter out when the string contains majority of non a-Z characters")
-	flags.BoolVar(&opts.PrintSections, "print-sections", false, "print every section with its type, flags, address, size and how it is read")
+	flags.BoolVar(&cfg.printSections, "print-sections", false, "print every section with its type, flags, address, size and how it is read")
 	flags.BoolVar(&opts.MaskProtobufs, "mask-protobufs", false, "blank serialized protobuf descriptors (.proto file descriptors embedded by protoc) before extracting strings")
-	flags.StringVar(&opts.Terminated, "terminated", "auto", "keep only data section strings that end in a NUL byte or lie in text: auto (off for Go and Rust binaries), on or off")
-	sorted := flags.Bool("sort", false, "print byte-order sorted unique lines instead of section order")
+	flags.StringVar(&cfg.terminated, "terminated", "auto", "keep only data section strings that end in a NUL byte or lie in text: auto (off for Go and Rust binaries), on or off")
+	flags.BoolVar(&cfg.sorted, "sort", false, "print byte-order sorted unique lines instead of section order")
 
-	if err := flags.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-
-		return 2
+	if code, ok := parseFlags(flags, args); !ok {
+		return code
 	}
 
 	usageError := func(format string, a ...any) int {
@@ -128,16 +154,16 @@ func runDump(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	switch *format {
-	case "auto":
-	case "pe", "elf", "macho":
-		opts.Format = *format
+	switch cfg.format {
+	case "auto", "pe", "elf", "macho":
 	default:
-		return usageError("invalid -format value %q: want auto, pe, elf or macho\n", *format)
+		return usageError("invalid -format value %q: want auto, pe, elf or macho\n", cfg.format)
 	}
 
-	if opts.Terminated != "auto" && opts.Terminated != "on" && opts.Terminated != "off" {
-		return usageError("invalid -terminated value %q: want auto, on or off\n", opts.Terminated)
+	switch cfg.terminated {
+	case "auto", "on", "off":
+	default:
+		return usageError("invalid -terminated value %q: want auto, on or off\n", cfg.terminated)
 	}
 
 	if flags.NArg() != 1 {
@@ -146,7 +172,7 @@ func runDump(args []string, stdout, stderr io.Writer) int {
 
 	path := flags.Arg(0)
 	out := bufio.NewWriterSize(stdout, 1<<16)
-	err := run(path, opts, *sorted, out, stderr)
+	err := run(path, opts, cfg, out, stderr)
 
 	if flushErr := out.Flush(); err == nil {
 		err = flushErr
@@ -160,9 +186,9 @@ func runDump(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// run dumps one file to out, sorted and deduplicated when sorted is set. A
+// run dumps one file to out, sorted and deduplicated when cfg.sorted is set. A
 // panic while parsing or dumping is returned as an error.
-func run(path string, opts Options, sorted bool, out *bufio.Writer, stderr io.Writer) (err error) {
+func run(path string, opts Options, cfg dumpConfig, out *bufio.Writer, stderr io.Writer) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic: %v", r)
@@ -178,50 +204,41 @@ func run(path string, opts Options, sorted bool, out *bufio.Writer, stderr io.Wr
 		fmt.Fprintf(stderr, "%s: warning: %s\n", path, fmt.Sprintf(format, args...))
 	}
 
-	b, err := Parse(data, opts.Format, warn)
+	b, err := Parse(data, cfg.format, warn)
 	if err != nil {
 		return err
 	}
 
-	if opts.PrintSections {
+	if cfg.printSections {
 		PrintSections(out, b)
 		return nil
 	}
 
-	// Masking blanks bytes of data in place, so the markers are looked up
-	// before dumping.
-	terminated, toolchain := ResolveTerminated(opts.Terminated, data)
+	terminated, toolchain := ResolveTerminated(cfg.terminated, data)
 	if toolchain != "" {
 		fmt.Fprintf(stderr, "%s: note: %s binary, end-of-string rule off\n", path, toolchain)
 	}
 
-	sink := lineSink(out)
+	opts.Terminated = terminated
+
+	emit := func(line string) {
+		out.WriteString(line)
+		out.WriteString("\n")
+	}
 
 	var lines []string
 
-	if sorted {
+	sink := emit
+	if cfg.sorted {
 		sink = func(line string) { lines = append(lines, line) }
 	}
 
-	d := Dumper{opts: opts, sink: sink, terminated: terminated}
+	d := Dumper{opts: opts, sink: sink}
 	d.Dump(b)
 
-	if sorted {
-		sort.Strings(lines)
-
-		for _, line := range slices.Compact(lines) {
-			out.WriteString(line)
-			out.WriteString("\n")
-		}
+	for _, line := range sortedUnique(lines) {
+		emit(line)
 	}
 
 	return nil
-}
-
-// lineSink returns a sink that writes each line to w followed by a newline.
-func lineSink(w io.StringWriter) Sink {
-	return func(line string) {
-		w.WriteString(line)
-		w.WriteString("\n")
-	}
 }

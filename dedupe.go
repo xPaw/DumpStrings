@@ -1,20 +1,20 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 )
+
+// stringsFileSuffix ends the name of every file `target *` selects.
+const stringsFileSuffix = "_strings.txt"
 
 type dedupeStep struct {
 	refs    []string
@@ -28,23 +28,27 @@ type dedupeFile struct {
 	changed bool
 }
 
+// dedupeJob is a parsed config with every file its steps read or change.
+type dedupeJob struct {
+	steps []dedupeStep
+
+	// star lists the loaded *_strings.txt files in order, for `target *`.
+	star []string
+
+	files map[string]*dedupeFile
+
+	// before is the set of all lines over every loaded file.
+	before map[string]struct{}
+}
+
 // runDedupe implements `dedupe [-root .] [-dry-run] <config>` and returns the process exit code.
-func runDedupe(args []string) int {
-	flags := flag.NewFlagSet("dedupe", flag.ContinueOnError)
+func runDedupe(args []string, stdout, stderr io.Writer) int {
+	flags := newFlagSet("dedupe", "Usage: DumpStrings dedupe [-root dir] [-dry-run] <config>", stderr)
 	root := flags.String("root", ".", "directory the config paths are relative to")
 	dryRun := flags.Bool("dry-run", false, "report what would change without writing")
 
-	flags.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: DumpStrings dedupe [-root dir] [-dry-run] <config>")
-		flags.PrintDefaults()
-	}
-
-	if err := flags.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-
-		return 2
+	if code, ok := parseFlags(flags, args); !ok {
+		return code
 	}
 
 	if flags.NArg() != 1 {
@@ -52,22 +56,50 @@ func runDedupe(args []string) int {
 		return 2
 	}
 
-	return dedupeRun(*root, flags.Arg(0), *dryRun, os.Stdout, os.Stderr, nil)
+	return dedupeRun(*root, flags.Arg(0), *dryRun, stdout, stderr)
 }
 
-// dedupeRun does the work of runDedupe; beforeCheck, when set, runs just before the
-// self-check and may modify the loaded files.
-func dedupeRun(root, configPath string, dryRun bool, stdout, stderr io.Writer, beforeCheck func(map[string]*dedupeFile)) int {
-	conf, err := os.ReadFile(configPath)
-	if err != nil {
+// dedupeRun does the work of runDedupe.
+func dedupeRun(root, configPath string, dryRun bool, stdout, stderr io.Writer) int {
+	fail := func(err error) int {
 		fmt.Fprintf(stderr, "dedupe: %v\n", err)
 		return 1
 	}
 
+	job, err := loadDedupeJob(root, configPath)
+	if err != nil {
+		return fail(err)
+	}
+
+	job.apply(stdout)
+
+	if !job.unchanged() {
+		fmt.Fprintln(stderr, "dedupe: self-check failed: the set of all lines changed, nothing was written")
+		return 2
+	}
+
+	if dryRun {
+		return 0
+	}
+
+	if err := job.write(root); err != nil {
+		return fail(err)
+	}
+
+	return 0
+}
+
+// loadDedupeJob parses the config and loads every file its steps name, and
+// every *_strings.txt under root when a step targets them all.
+func loadDedupeJob(root, configPath string) (*dedupeJob, error) {
+	conf, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, err
+	}
+
 	steps, err := parseDedupeConfig(conf)
 	if err != nil {
-		fmt.Fprintf(stderr, "dedupe: %s: %v\n", configPath, err)
-		return 1
+		return nil, fmt.Errorf("%s: %w", configPath, err)
 	}
 
 	need := map[string]struct{}{}
@@ -88,8 +120,7 @@ func dedupeRun(root, configPath string, dryRun bool, stdout, stderr io.Writer, b
 	if needStar {
 		found, err := findStringsFiles(root)
 		if err != nil {
-			fmt.Fprintf(stderr, "dedupe: %v\n", err)
-			return 1
+			return nil, err
 		}
 
 		for _, p := range found {
@@ -97,59 +128,72 @@ func dedupeRun(root, configPath string, dryRun bool, stdout, stderr io.Writer, b
 		}
 	}
 
-	files := make(map[string]*dedupeFile, len(need))
-	before := map[string]struct{}{}
+	job := &dedupeJob{
+		steps:  steps,
+		files:  make(map[string]*dedupeFile, len(need)),
+		before: map[string]struct{}{},
+	}
 
 	for p := range need {
 		f, err := loadDedupeFile(root, p)
 		if err != nil {
-			fmt.Fprintf(stderr, "dedupe: %v\n", err)
-			return 1
+			return nil, err
 		}
 
 		if f == nil {
 			continue
 		}
 
-		files[p] = f
+		job.files[p] = f
 
 		for _, l := range f.lines {
-			before[l] = struct{}{}
+			job.before[l] = struct{}{}
 		}
 	}
 
-	var star []string
-
 	if needStar {
-		for p := range files {
-			if strings.HasSuffix(p, "_strings.txt") {
-				star = append(star, p)
+		for p := range job.files {
+			if strings.HasSuffix(p, stringsFileSuffix) {
+				job.star = append(job.star, p)
 			}
 		}
 
-		sort.Strings(star)
+		sort.Strings(job.star)
 	}
 
-	for i, step := range steps {
-		applyDedupeStep(i+1, step, star, files, stdout)
+	return job, nil
+}
+
+// apply runs every step in order and reports each one to stdout.
+func (job *dedupeJob) apply(stdout io.Writer) {
+	for i, step := range job.steps {
+		applyDedupeStep(i+1, step, job.star, job.files, stdout)
+	}
+}
+
+// unchanged reports whether the set of all lines over every loaded file still
+// equals the set before the steps ran.
+func (job *dedupeJob) unchanged() bool {
+	after := make(map[string]struct{}, len(job.before))
+
+	for _, f := range job.files {
+		for _, l := range f.lines {
+			if _, ok := job.before[l]; !ok {
+				return false
+			}
+
+			after[l] = struct{}{}
+		}
 	}
 
-	if beforeCheck != nil {
-		beforeCheck(files)
-	}
+	return len(after) == len(job.before)
+}
 
-	if !unionUnchanged(before, files) {
-		fmt.Fprintln(stderr, "dedupe: self-check failed: the set of all lines changed, nothing was written")
-		return 2
-	}
-
-	if dryRun {
-		return 0
-	}
-
+// write replaces every changed file, in path order.
+func (job *dedupeJob) write(root string) error {
 	var changed []string
 
-	for p, f := range files {
+	for p, f := range job.files {
 		if f.changed {
 			changed = append(changed, p)
 		}
@@ -158,13 +202,21 @@ func dedupeRun(root, configPath string, dryRun bool, stdout, stderr io.Writer, b
 	sort.Strings(changed)
 
 	for _, p := range changed {
-		if err := writeDedupeFile(root, p, files[p]); err != nil {
-			fmt.Fprintf(stderr, "dedupe: %v\n", err)
-			return 1
+		f := job.files[p]
+
+		var data bytes.Buffer
+
+		for _, l := range f.lines {
+			data.WriteString(l)
+			data.WriteByte('\n')
+		}
+
+		if err := replaceFile(filepath.Join(root, filepath.FromSlash(p)), data.Bytes(), f.mode); err != nil {
+			return err
 		}
 	}
 
-	return 0
+	return nil
 }
 
 // parseDedupeConfig parses the step list. Blank lines separate steps and comment lines are
@@ -172,15 +224,13 @@ func dedupeRun(root, configPath string, dryRun bool, stdout, stderr io.Writer, b
 func parseDedupeConfig(data []byte) ([]dedupeStep, error) {
 	var steps []dedupeStep
 	var cur dedupeStep
-	inStep := false
 
 	flush := func() {
-		if inStep {
+		if len(cur.refs) > 0 || len(cur.targets) > 0 || cur.star {
 			steps = append(steps, cur)
 		}
 
 		cur = dedupeStep{}
-		inStep = false
 	}
 
 	for i, raw := range strings.Split(string(data), "\n") {
@@ -196,12 +246,10 @@ func parseDedupeConfig(data []byte) ([]dedupeStep, error) {
 			continue
 		}
 
-		keyword, rest, _ := strings.Cut(line, " ")
-		if keyword == line {
-			keyword, rest, _ = strings.Cut(line, "\t")
+		keyword, rest := line, ""
+		if sep := strings.IndexAny(line, " \t"); sep >= 0 {
+			keyword, rest = line[:sep], strings.TrimSpace(line[sep+1:])
 		}
-
-		rest = strings.TrimSpace(rest)
 
 		switch keyword {
 		case "ref":
@@ -216,29 +264,25 @@ func parseDedupeConfig(data []byte) ([]dedupeStep, error) {
 
 			cur.refs = append(cur.refs, p)
 		case "target":
-			if rest == "*" {
-				if len(cur.targets) > 0 {
-					return nil, fmt.Errorf("line %d: target * mixed with explicit targets", lineNo)
-				}
-
-				cur.star = true
-			} else {
-				if cur.star {
-					return nil, fmt.Errorf("line %d: target * mixed with explicit targets", lineNo)
-				}
-
-				p, err := cleanDedupePath(rest)
-				if err != nil {
-					return nil, fmt.Errorf("line %d: %w", lineNo, err)
-				}
-
-				cur.targets = append(cur.targets, p)
+			star := rest == "*"
+			if (star && len(cur.targets) > 0) || (!star && cur.star) {
+				return nil, fmt.Errorf("line %d: target * mixed with explicit targets", lineNo)
 			}
+
+			if star {
+				cur.star = true
+				break
+			}
+
+			p, err := cleanDedupePath(rest)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: %w", lineNo, err)
+			}
+
+			cur.targets = append(cur.targets, p)
 		default:
 			return nil, fmt.Errorf("line %d: unknown keyword %q", lineNo, keyword)
 		}
-
-		inStep = true
 	}
 
 	flush()
@@ -269,30 +313,19 @@ func cleanDedupePath(p string) (string, error) {
 func findStringsFiles(root string) ([]string, error) {
 	var found []string
 
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	isStrings := func(name string) bool { return strings.HasSuffix(name, stringsFileSuffix) }
+	stop := func(err error) error { return err }
+
+	err := walkFiles(root, isStrings, func(p string) error {
+		rel, err := filepath.Rel(root, p)
 		if err != nil {
 			return err
 		}
 
-		if d.IsDir() {
-			if d.Name() == ".git" || d.Name() == "node_modules" {
-				return filepath.SkipDir
-			}
-
-			return nil
-		}
-
-		if d.Type().IsRegular() && strings.HasSuffix(d.Name(), "_strings.txt") {
-			rel, err := filepath.Rel(root, p)
-			if err != nil {
-				return err
-			}
-
-			found = append(found, filepath.ToSlash(rel))
-		}
+		found = append(found, filepath.ToSlash(rel))
 
 		return nil
-	})
+	}, stop)
 
 	return found, err
 }
@@ -323,23 +356,23 @@ func loadDedupeFile(root, rel string) (*dedupeFile, error) {
 }
 
 // splitDedupeLines splits on \n, drops the trailing empty element and returns sorted unique lines.
+// The lines share one copy of data.
 func splitDedupeLines(data []byte) []string {
-	lines := make([]string, 0, bytes.Count(data, []byte{'\n'})+1)
+	s := string(data)
+	lines := make([]string, 0, strings.Count(s, "\n")+1)
 
-	for len(data) > 0 {
-		i := bytes.IndexByte(data, '\n')
+	for len(s) > 0 {
+		i := strings.IndexByte(s, '\n')
 		if i < 0 {
-			lines = append(lines, string(data))
+			lines = append(lines, s)
 			break
 		}
 
-		lines = append(lines, string(data[:i]))
-		data = data[i+1:]
+		lines = append(lines, s[:i])
+		s = s[i+1:]
 	}
 
-	slices.Sort(lines)
-
-	return slices.Compact(lines)
+	return sortedUnique(lines)
 }
 
 // applyDedupeStep removes the union of the step's reference lines from every target that is not a reference of the step.
@@ -402,55 +435,4 @@ func applyDedupeStep(n int, step dedupeStep, star []string, files map[string]*de
 	}
 
 	fmt.Fprintf(stdout, "step %d: refs [%s], %d targets changed, %d lines removed\n", n, strings.Join(present, ", "), targetsChanged, removed)
-}
-
-// unionUnchanged reports whether the set of all lines over every loaded file still equals before.
-func unionUnchanged(before map[string]struct{}, files map[string]*dedupeFile) bool {
-	after := make(map[string]struct{}, len(before))
-
-	for _, f := range files {
-		for _, l := range f.lines {
-			if _, ok := before[l]; !ok {
-				return false
-			}
-
-			after[l] = struct{}{}
-		}
-	}
-
-	return len(after) == len(before)
-}
-
-// writeDedupeFile replaces the file through a temporary file in the same directory.
-func writeDedupeFile(root, rel string, f *dedupeFile) error {
-	full := filepath.Join(root, filepath.FromSlash(rel))
-	tmp := full + ".tmp"
-
-	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.mode)
-	if err != nil {
-		return err
-	}
-
-	w := bufio.NewWriterSize(out, 1<<20)
-
-	for _, l := range f.lines {
-		w.WriteString(l)
-		w.WriteByte('\n')
-	}
-
-	err = w.Flush()
-
-	if cerr := out.Close(); err == nil {
-		err = cerr
-	}
-
-	if err == nil {
-		err = os.Rename(tmp, full)
-	}
-
-	if err != nil {
-		os.Remove(tmp)
-	}
-
-	return err
 }

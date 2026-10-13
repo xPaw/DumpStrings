@@ -9,34 +9,42 @@ import (
 // run for the NUL bytes that delimit its string.
 const textWindow = 4096
 
-// textControl marks the ASCII bytes allowed in a valid UTF-8 string: tab,
-// line feed, vertical tab, form feed, carriage return, ESC and printable
-// ASCII.
+// textControl marks the ASCII bytes allowed in a valid UTF-8 string: the
+// string bytes and ESC.
 var textControl = func() (t [utf8.RuneSelf]bool) {
-	for c := 0x09; c <= 0x0D; c++ {
-		t[c] = true
-	}
-
+	copy(t[:], isRunByte[:utf8.RuneSelf])
 	t[0x1B] = true
-
-	for c := 0x20; c <= 0x7E; c++ {
-		t[c] = true
-	}
 
 	return t
 }()
 
 // textPrintable marks the bytes counted as printable when a string is not
-// valid UTF-8: tab, line feed, carriage return and printable ASCII.
+// valid UTF-8: the string bytes except vertical tab and form feed.
 var textPrintable = func() (t [256]bool) {
-	t['\t'], t['\n'], t['\r'] = true, true, true
-
-	for c := 0x20; c <= 0x7E; c++ {
-		t[c] = true
-	}
+	t = isRunByte
+	t['\v'], t['\f'] = false, false
 
 	return t
 }()
+
+// textRune returns the length of the character d starts with when it is valid
+// UTF-8 text as isText defines it, or 0.
+func textRune(d []byte) int {
+	if c := d[0]; c < utf8.RuneSelf {
+		if textControl[c] {
+			return 1
+		}
+
+		return 0
+	}
+
+	r, n := utf8.DecodeRune(d)
+	if r < 0xA0 || (r == utf8.RuneError && n <= 1) {
+		return 0
+	}
+
+	return n
+}
 
 // isText reports whether seg reads as a string: valid UTF-8 without control
 // characters other than textControl and without C1 code points (U+0080 to
@@ -46,22 +54,12 @@ func isText(seg []byte) bool {
 	printable := 0
 
 	for i := 0; i < len(seg); {
-		c := seg[i]
-
-		if c < utf8.RuneSelf {
-			if textPrintable[c] {
-				printable++
-			} else if !textControl[c] {
-				strict = false
-			}
-
-			i++
-			continue
+		if textPrintable[seg[i]] {
+			printable++
 		}
 
 		if strict {
-			r, n := utf8.DecodeRune(seg[i:])
-			if r >= 0xA0 && (r != utf8.RuneError || n > 1) {
+			if n := textRune(seg[i:]); n > 0 {
 				i += n
 				continue
 			}
@@ -176,19 +174,8 @@ func firstNonText(d []byte, i int) int {
 	}
 
 	for i < len(d) {
-		c := d[i]
-
-		if c < utf8.RuneSelf {
-			if !textControl[c] {
-				return i
-			}
-
-			i++
-			continue
-		}
-
-		r, n := utf8.DecodeRune(d[i:])
-		if r < 0xA0 || (r == utf8.RuneError && n <= 1) {
+		n := textRune(d[i:])
+		if n == 0 {
 			return i
 		}
 
@@ -215,18 +202,10 @@ var goBuildInfoMagic = []byte("\xff Go buildinf:")
 // malformed copies of the magic string, as C programs and the Go linker carry
 // as literals, do not count.
 func hasGoBuildInfo(data []byte) bool {
-	for base := 0; base < len(data); {
-		i := bytes.Index(data[base:], goBuildInfoMagic)
-		if i < 0 {
-			return false
-		}
-
-		off := base + i
-		if off%16 == 0 && off+14 < len(data) && (data[off+14] == 4 || data[off+14] == 8) {
+	for off := 0; off+15 <= len(data); off += 16 {
+		if data[off] == 0xFF && bytes.HasPrefix(data[off:], goBuildInfoMagic) && (data[off+14] == 4 || data[off+14] == 8) {
 			return true
 		}
-
-		base = off + 1
 	}
 
 	return false

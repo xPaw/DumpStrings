@@ -111,7 +111,7 @@ func pbConsume(d []byte, start int) int {
 func isProtoName(name []byte) bool {
 	const suffix = ".proto"
 
-	if len(name) <= len(suffix) || string(name[len(name)-len(suffix):]) != suffix {
+	if len(name) <= len(suffix) || !bytes.HasSuffix(name, []byte(suffix)) {
 		return false
 	}
 
@@ -127,17 +127,19 @@ func isProtoName(name []byte) bool {
 	return true
 }
 
-// MaskProtobufs zero-fills every serialized FileDescriptorProto in d, found
-// as field 1 (a .proto file name) followed by a well-formed message that is
-// terminated by a NUL byte or the end of d. It calls found with each blob's
-// name and length when found is not nil.
-func MaskProtobufs(d []byte, found func(name []byte, size int)) {
+// MaskProtobufs returns d with every serialized FileDescriptorProto
+// zero-filled, found as field 1 (a .proto file name) followed by a well-formed
+// message that is terminated by a NUL byte or the end of d. d is not modified:
+// it is returned as is when it holds no descriptor, and copied otherwise.
+func MaskProtobufs(d []byte) []byte {
+	var masked []byte
+
 	i := 0
 
 	for {
 		j := bytes.IndexByte(d[i:], 0x0a)
 		if j < 0 || i+j+1 >= len(d) {
-			return
+			break
 		}
 
 		i += j
@@ -159,11 +161,12 @@ func MaskProtobufs(d []byte, found func(name []byte, size int)) {
 			end := pbConsume(d, i)
 
 			if end > i && (end == len(d) || d[end] == 0) {
-				if found != nil {
-					found(d[i+hdr:i+hdr+n], end-i)
+				// The search only moves forward, so it goes on in d.
+				if masked == nil {
+					masked = bytes.Clone(d)
 				}
 
-				clear(d[i:end])
+				clear(masked[i:end])
 				i = end
 
 				continue
@@ -172,4 +175,10 @@ func MaskProtobufs(d []byte, found func(name []byte, size int)) {
 
 		i++
 	}
+
+	if masked == nil {
+		return d
+	}
+
+	return masked
 }

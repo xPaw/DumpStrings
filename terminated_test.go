@@ -14,12 +14,7 @@ import (
 func dumpData(s Section, terminated bool) []string {
 	var got []string
 
-	d := Dumper{
-		opts:       Options{MinLength: 4, SymLength: 10},
-		sink:       func(line string) { got = append(got, line) },
-		terminated: terminated,
-	}
-	d.DumpSection(s)
+	testDumper(Options{MinLength: 4, SymLength: 10, Terminated: terminated}, &got).DumpSection(s)
 
 	return got
 }
@@ -55,7 +50,7 @@ func TestEndRule(t *testing.T) {
 	for _, test := range tests {
 		data := []byte(test.data)
 
-		if got := dumpData(Section{Kind: KindData, Data: data}, true); !reflect.DeepEqual(got, test.want) {
+		if got := dumpData(Section{EndRule: true, Data: data}, true); !reflect.DeepEqual(got, test.want) {
 			t.Errorf("%s: lines = %q, want %q", test.name, got, test.want)
 		}
 	}
@@ -67,7 +62,7 @@ func TestEndRuleWindowPerRun(t *testing.T) {
 	filler := strings.Repeat("abc\x80", 375)
 	data := []byte("\x00" + filler + "first\x80" + filler + filler + "last\x80\x00")
 
-	got := dumpData(Section{Kind: KindData, Data: data}, true)
+	got := dumpData(Section{EndRule: true, Data: data}, true)
 	want := []string{"first"}
 
 	if !reflect.DeepEqual(got, want) {
@@ -181,35 +176,37 @@ func TestEndRuleMatchesReference(t *testing.T) {
 	}
 }
 
-func TestEndRuleSectionKinds(t *testing.T) {
+func TestEndRuleSectionFlag(t *testing.T) {
 	data := []byte("\x00hello world\xff\xfe\xfd\xfc\x01\x02\x03\x04\x00")
 
-	for _, kind := range []SectionKind{KindStrings, KindNote, KindFallback} {
-		if got := dumpData(Section{Kind: kind, Data: data}, true); len(got) != 1 {
-			t.Errorf("%s: lines = %q, want the run kept", kind, got)
-		}
+	if got := dumpData(Section{Data: data}, true); len(got) != 1 {
+		t.Errorf("section without the rule: lines = %q, want the run kept", got)
 	}
 
-	if got := dumpData(Section{Kind: KindData, Data: data}, false); len(got) != 1 {
+	if got := dumpData(Section{EndRule: true, Data: data}, false); len(got) != 1 {
 		t.Errorf("rule off: lines = %q, want the run kept", got)
+	}
+
+	if got := dumpData(Section{EndRule: true, Data: data}, true); len(got) != 0 {
+		t.Errorf("rule on: lines = %q, want the run dropped", got)
 	}
 }
 
 func TestEndRuleImportRewrite(t *testing.T) {
 	rewrite := map[int]int{1: 3, 2: 3}
 
-	kept := dumpData(Section{Kind: KindData, Data: []byte("\x00\x41\x42ImportedName\x00"), Rewrite: rewrite}, true)
+	kept := dumpData(Section{EndRule: true, Data: []byte("\x00\x41\x42ImportedName\x00"), Rewrite: rewrite}, true)
 	if want := []string{"ImportedName"}; !reflect.DeepEqual(kept, want) {
 		t.Errorf("terminated import: lines = %q, want %q", kept, want)
 	}
 
 	glued := []byte("\x00\x41\x42ImportedName\xff\xfe\xfd\xfc\x01\x02\x03\x04\x00")
 
-	if got := dumpData(Section{Kind: KindData, Data: glued, Rewrite: rewrite}, true); got != nil {
+	if got := dumpData(Section{EndRule: true, Data: glued, Rewrite: rewrite}, true); got != nil {
 		t.Errorf("glued import: lines = %q, want none", got)
 	}
 
-	if got, want := dumpData(Section{Kind: KindData, Data: glued, Rewrite: rewrite}, false), []string{"ImportedName"}; !reflect.DeepEqual(got, want) {
+	if got, want := dumpData(Section{EndRule: true, Data: glued, Rewrite: rewrite}, false), []string{"ImportedName"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("glued import, rule off: lines = %q, want %q", got, want)
 	}
 }

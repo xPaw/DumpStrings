@@ -15,9 +15,11 @@ type testMachoSection struct {
 }
 
 const (
-	testCpuAmd64 = 0x01000007
-	testCpuArm64 = 0x0100000c
+	testCpuAmd64 = uint32(macho.CpuAmd64)
+	testCpuArm64 = uint32(macho.CpuArm64)
 )
+
+var testMachOOptions = Options{MinLength: 4, SymLength: 10, MaskProtobufs: true, Terminated: true}
 
 // machoLoadPath encodes a load command whose lc_str of path sits at off.
 func machoLoadPath(cmd, off uint32, path string) []byte {
@@ -51,7 +53,7 @@ func buildMachO(cpu uint32, secs []testMachoSection, strtab []byte, loads [][]by
 	}
 
 	out := make([]byte, 32+cmdsSize)
-	le.PutUint32(out, 0xfeedfacf)
+	le.PutUint32(out, macho.Magic64)
 	le.PutUint32(out[4:], cpu)
 	le.PutUint32(out[8:], 3)
 	le.PutUint32(out[12:], 6)
@@ -73,7 +75,7 @@ func buildMachO(cpu uint32, secs []testMachoSection, strtab []byte, loads [][]by
 		c := out[p:]
 		off := offs[i]
 
-		le.PutUint32(c, 0x19)
+		le.PutUint32(c, uint32(macho.LoadCmdSegment64))
 		le.PutUint32(c[4:], 152)
 		copy(c[8:], s.seg)
 		le.PutUint64(c[24:], 0x1000*uint64(i+1))
@@ -98,7 +100,7 @@ func buildMachO(cpu uint32, secs []testMachoSection, strtab []byte, loads [][]by
 	}
 
 	if strtab != nil {
-		le.PutUint32(out[p:], 2)
+		le.PutUint32(out[p:], uint32(macho.LoadCmdSymtab))
 		le.PutUint32(out[p+4:], 24)
 		le.PutUint32(out[p+8:], uint32(strOff))
 		le.PutUint32(out[p+16:], uint32(strOff))
@@ -113,7 +115,7 @@ func buildMachO(cpu uint32, secs []testMachoSection, strtab []byte, loads [][]by
 func buildFatMachO(cpus []uint32, images [][]byte) []byte {
 	be := binary.BigEndian
 	out := make([]byte, 8+20*len(images))
-	be.PutUint32(out, 0xcafebabe)
+	be.PutUint32(out, macho.MagicFat)
 	be.PutUint32(out[4:], uint32(len(images)))
 
 	for i, img := range images {
@@ -142,11 +144,11 @@ func TestMachOThin(t *testing.T) {
 		{"__DATA", "__bss", 0x1, []byte("zerofill trap string\x00")},
 		{"__TEXT", "__text", 0, []byte("unselected text string\x00")},
 	}, []byte("\x00_symbol_name_one\x00_symbol_two\x00"), [][]byte{
-		machoLoadPath(0xc, 24, "/usr/lib/libSystem.B.dylib"),
-		machoLoadPath(0x8000001c, 12, "@executable_path/../lib"),
+		machoLoadPath(uint32(macho.LoadCmdDylib), 24, "/usr/lib/libSystem.B.dylib"),
+		machoLoadPath(uint32(macho.LoadCmdRpath), 12, "@executable_path/../lib"),
 	})
 
-	b, lines, warnings := parseAndDump(t, img, true)
+	b, lines, warnings := parseAndDump(t, img, testMachOOptions)
 
 	want := []string{
 		"cstring one", "cstring two", "const data string", "data section str",
@@ -157,8 +159,16 @@ func TestMachOThin(t *testing.T) {
 		t.Errorf("lines = %q, want %q", lines, want)
 	}
 
-	if len(warnings) != 0 || b.Readable != 5 {
-		t.Errorf("warnings %q, readable %d", warnings, b.Readable)
+	if len(warnings) != 0 || !b.Readable || len(b.Sections) != 5 {
+		t.Errorf("warnings %q, readable %v, %d sections", warnings, b.Readable, len(b.Sections))
+	}
+
+	// Every section is masked; only __const and __data take the end-of-string
+	// rule.
+	for i, s := range b.Sections {
+		if wantRule := i == 1 || i == 2; !s.Mask || s.EndRule != wantRule {
+			t.Errorf("section %d: mask %v, end rule %v", i, s.Mask, s.EndRule)
+		}
 	}
 
 	var reads []string
@@ -192,7 +202,7 @@ func TestMachOFat(t *testing.T) {
 		t.Fatalf("DetectFormat = %q, %v", format, err)
 	}
 
-	b, lines, warnings := parseAndDump(t, img, true)
+	b, lines, warnings := parseAndDump(t, img, testMachOOptions)
 
 	if want := []string{"alpha string one", "_alpha_symbol", "beta string two"}; !reflect.DeepEqual(lines, want) {
 		t.Errorf("lines = %q, want %q", lines, want)
@@ -217,7 +227,7 @@ func TestMachOFatTruncated(t *testing.T) {
 	second := buildMachO(testCpuArm64, []testMachoSection{{"__TEXT", "__cstring", 0x2, []byte("beta string two\x00padding after")}}, nil, nil)
 	img := buildFatMachO([]uint32{testCpuAmd64, testCpuArm64}, [][]byte{first, second})
 
-	_, lines, warnings := parseAndDump(t, img[:len(img)-14], true)
+	_, lines, warnings := parseAndDump(t, img[:len(img)-14], testMachOOptions)
 
 	if want := []string{"alpha string one", "beta string two"}; !reflect.DeepEqual(lines, want) {
 		t.Errorf("lines = %q, want %q", lines, want)

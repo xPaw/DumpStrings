@@ -2,33 +2,13 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
-
-func writeTestFile(t *testing.T, path string, data []byte) {
-	t.Helper()
-
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func readTestFile(t *testing.T, path string) []byte {
-	t.Helper()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return data
-}
 
 func TestFixFileEncoding(t *testing.T) {
 	cases := []struct {
@@ -52,10 +32,9 @@ func TestFixFileEncoding(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "f.txt")
-			writeTestFile(t, path, c.in)
+			root := writeTree(t, map[string]string{"f.txt": string(c.in)})
 
-			enc, err := fixFileEncoding(path)
+			enc, err := fixFileEncoding(filepath.Join(root, "f.txt"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -64,12 +43,12 @@ func TestFixFileEncoding(t *testing.T) {
 				t.Fatalf("encoding %q, want %q", enc, c.enc)
 			}
 
-			want := c.in
+			want := string(c.in)
 			if c.enc != "" {
-				want = []byte(c.out)
+				want = c.out
 			}
 
-			if got := readTestFile(t, path); !bytes.Equal(got, want) {
+			if got := readTree(t, root, "f.txt"); got != want {
 				t.Fatalf("got %q, want %q", got, want)
 			}
 		})
@@ -77,8 +56,7 @@ func TestFixFileEncoding(t *testing.T) {
 }
 
 func TestRunFixEncodingWalk(t *testing.T) {
-	dir := t.TempDir()
-	utf16 := []byte{0xFF, 0xFE, 'a', 0}
+	const utf16 = "\xFF\xFEa\x00"
 
 	files := map[string]bool{
 		"a.txt":                   true,
@@ -92,75 +70,90 @@ func TestRunFixEncodingWalk(t *testing.T) {
 		"sub/deep/archive.tar.gz": false,
 	}
 
+	tree := map[string]string{}
 	for name := range files {
-		writeTestFile(t, filepath.Join(dir, name), utf16)
+		tree[name] = utf16
 	}
 
-	if code := runFixEncoding([]string{dir}); code != 0 {
+	dir := writeTree(t, tree)
+
+	var stdout bytes.Buffer
+
+	if code := runFixEncoding([]string{dir}, &stdout, io.Discard); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 
 	for name, converted := range files {
-		got := readTestFile(t, filepath.Join(dir, name))
-		if converted != bytes.Equal(got, []byte("a\n")) {
+		got := readTree(t, dir, name)
+		if converted != (got == "a\n") {
 			t.Errorf("%s: converted=%v, content %q", name, !converted, got)
 		}
 	}
 
-	if code := runFixEncoding([]string{"-ext", "xml,TXT", dir}); code != 0 {
+	if want := " UTF-16LE - " + filepath.Join(dir, "a.txt") + "\n"; !strings.Contains(stdout.String(), want) {
+		t.Errorf("stdout %q, want a line %q", stdout.String(), want)
+	}
+
+	if code := runFixEncoding([]string{"-ext", "xml,TXT", dir}, io.Discard, io.Discard); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 
 	for _, name := range []string{"sub/c.xml", "sub/UPPER.TXT"} {
-		if got := readTestFile(t, filepath.Join(dir, name)); !bytes.Equal(got, []byte("a\n")) {
+		if got := readTree(t, dir, name); got != "a\n" {
 			t.Errorf("%s: %q", name, got)
 		}
 	}
 
-	if got := readTestFile(t, filepath.Join(dir, ".git/d.txt")); !bytes.Equal(got, utf16) {
+	if got := readTree(t, dir, ".git/d.txt"); got != utf16 {
 		t.Error(".git was touched")
 	}
 }
 
 func TestRunFixEncodingFileArgIgnoresExt(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "x.bin")
-	writeTestFile(t, path, []byte{0xFF, 0xFE, 'a', 0})
+	root := writeTree(t, map[string]string{"x.bin": "\xFF\xFEa\x00"})
 
-	if code := runFixEncoding([]string{path}); code != 0 {
+	if code := runFixEncoding([]string{filepath.Join(root, "x.bin")}, io.Discard, io.Discard); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 
-	if got := readTestFile(t, path); !bytes.Equal(got, []byte("a\n")) {
+	if got := readTree(t, root, "x.bin"); got != "a\n" {
 		t.Fatalf("got %q", got)
 	}
 }
 
 func TestRunFixEncodingExitCodes(t *testing.T) {
-	dir := t.TempDir()
+	dir := writeTree(t, map[string]string{"g.txt": "\xFF\xFEa\x00"})
 
-	if code := runFixEncoding(nil); code != 2 {
+	if code := runFixEncoding(nil, io.Discard, io.Discard); code != 2 {
 		t.Errorf("no args: %d", code)
 	}
 
-	if code := runFixEncoding([]string{"-bogus", dir}); code != 2 {
+	if code := runFixEncoding([]string{"-bogus", dir}, io.Discard, io.Discard); code != 2 {
 		t.Errorf("bad flag: %d", code)
 	}
 
-	good := filepath.Join(dir, "g.txt")
-	writeTestFile(t, good, []byte{0xFF, 0xFE, 'a', 0})
+	var stderr bytes.Buffer
 
-	if code := runFixEncoding([]string{filepath.Join(dir, "missing"), good}); code != 1 {
+	if code := runFixEncoding([]string{filepath.Join(dir, "missing"), filepath.Join(dir, "g.txt")}, io.Discard, &stderr); code != 1 {
 		t.Errorf("missing path: %d", code)
 	}
 
-	if got := readTestFile(t, good); !bytes.Equal(got, []byte("a\n")) {
+	if !strings.HasPrefix(stderr.String(), "Error: ") {
+		t.Errorf("stderr %q", stderr.String())
+	}
+
+	if got := readTree(t, dir, "g.txt"); got != "a\n" {
 		t.Errorf("later path not processed: %q", got)
 	}
 }
 
 func TestFixFileEncodingKeepsMode(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "m.txt")
-	writeTestFile(t, path, []byte{0xFF, 0xFE, 'a', 0})
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows files have no permission bits beyond read-only")
+	}
+
+	root := writeTree(t, map[string]string{"m.txt": "\xFF\xFEa\x00"})
+	path := filepath.Join(root, "m.txt")
 
 	if err := os.Chmod(path, 0600); err != nil {
 		t.Fatal(err)
