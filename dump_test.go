@@ -5,6 +5,7 @@ import (
 	"debug/elf"
 	"encoding/binary"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -189,5 +190,88 @@ func TestParseELFWithoutSections(t *testing.T) {
 	warned := false
 	if _, err := Parse(data, "", func(string, ...any) { warned = true }); err == nil || !warned {
 		t.Errorf("Parse without section headers: err %v, warned %v", err, warned)
+	}
+}
+
+func TestHasLine(t *testing.T) {
+	d := Dumper{opts: Options{MinLength: 4, SymLength: 10}}
+
+	tests := []struct {
+		name string
+		data string
+		want bool
+	}{
+		{"empty", "", false},
+		{"too short", "ab\x00cd\x00", false},
+		{"short symbols", "!@#$%^\x00", false},
+		{"long symbols", "!@#$%^&*()_+=", true},
+		{"short word", "abcd", true},
+		{"second run", "ab\x00\x01abcdef\x00", true},
+	}
+
+	for _, test := range tests {
+		if got := d.hasLine(Section{Data: []byte(test.data)}); got != test.want {
+			t.Errorf("%s: hasLine = %v, want %v", test.name, got, test.want)
+		}
+	}
+}
+
+func TestDumpMasksOnlyPlainSections(t *testing.T) {
+	blob := append(descriptor("x/y.proto"), 0)
+
+	count := func(protobufs string, kinds ...SectionKind) int {
+		b := &Binary{}
+		for _, kind := range kinds {
+			b.Sections = append(b.Sections, Section{Kind: kind, Data: bytes.Clone(blob), Wide: kind == KindStrings})
+		}
+
+		lines := 0
+		d := Dumper{opts: Options{MinLength: 4, SymLength: 10, Protobufs: protobufs}, sink: func(string) { lines++ }}
+		d.Dump(b)
+
+		return lines
+	}
+
+	one := count("keep", KindData)
+	if one == 0 {
+		t.Fatal("descriptor produced no lines")
+	}
+
+	// The note and the narrowed (Wide) section are not masked.
+	if got := count("mask", KindData, KindNote, KindStrings); got != 2*one {
+		t.Errorf("masked: %d lines, want %d", got, 2*one)
+	}
+
+	if got := count("keep", KindData, KindNote, KindStrings); got != 3*one {
+		t.Errorf("kept: %d lines, want %d", got, 3*one)
+	}
+}
+
+func TestPrintSections(t *testing.T) {
+	b := &Binary{Headers: []SectionHeader{
+		{Name: ".rodata", Type: "PROGBITS A", Addr: 0x1000, Size: 0x2a, Read: "data"},
+		{Name: ".bss", Type: "NOBITS WA", Addr: 0x3000, Size: 0x10},
+	}}
+
+	var out strings.Builder
+	PrintSections(&out, b)
+
+	want := ".rodata\tPROGBITS A\taddr=0x1000\tsize=0x2a\tread=data\n" +
+		".bss\tNOBITS WA\taddr=0x3000\tsize=0x10\tread=-\n"
+	if out.String() != want {
+		t.Errorf("PrintSections = %q, want %q", out.String(), want)
+	}
+}
+
+func TestLineSink(t *testing.T) {
+	var out strings.Builder
+
+	sink := lineSink(&out)
+	sink("first")
+	sink("")
+	sink("with\ttab")
+
+	if want := "first\n\nwith\ttab\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
 	}
 }

@@ -199,10 +199,6 @@ func (r *peReader) walkDelayImports(rva uint32, wide bool, base uint64, out map[
 			table -= base
 		}
 
-		if table > 0xFFFFFFFF {
-			continue
-		}
-
 		r.importNames(uint32(table), wide, base, va, out)
 	}
 }

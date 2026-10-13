@@ -169,3 +169,30 @@ func TestElfWideSectionHeader(t *testing.T) {
 		t.Errorf("read = %q", got)
 	}
 }
+
+func TestElfExcluded(t *testing.T) {
+	tests := map[string]bool{
+		"protodesc_cold":     true,
+		".gnu_debuglink":     true,
+		".valvesig":          true,
+		".note.go.buildid":   true,
+		".rodata.cst16":      true,
+		".rodata.cst":        true,
+		".debug_str":         true,
+		".data.rel.ro":       true,
+		".data.rel.ro.local": true,
+		".rodata":            false,
+		".rodata.str1.1":     false,
+		".data":              false,
+		".data.rel":          false,
+		".debug":             false,
+		".note.gnu.build-id": false,
+		"":                   false,
+	}
+
+	for name, want := range tests {
+		if got := elfExcluded(name); got != want {
+			t.Errorf("elfExcluded(%q) = %v, want %v", name, got, want)
+		}
+	}
+}

@@ -166,3 +166,35 @@ func TestMaskProtobufsGarbage(t *testing.T) {
 		}
 	}
 }
+
+func TestPbSkip(t *testing.T) {
+	tests := []struct {
+		name  string
+		d     []byte
+		wire  uint64
+		depth int
+		want  int
+		ok    bool
+	}{
+		{"fixed64", make([]byte, 8), 1, 0, 8, true},
+		{"fixed64 truncated", make([]byte, 7), 1, 0, 0, false},
+		{"fixed32", make([]byte, 4), 5, 0, 4, true},
+		{"fixed32 truncated", make([]byte, 3), 5, 0, 0, false},
+		{"fixed32 empty", nil, 5, 0, 0, false},
+		{"varint", []byte{0x80, 0x01}, 0, 0, 2, true},
+		{"varint truncated", []byte{0x80}, 0, 0, 1, false},
+		{"length-delimited", []byte{2, 'a', 'b'}, 2, 0, 3, true},
+		{"length-delimited truncated", []byte{3, 'a', 'b'}, 2, 0, 0, false},
+		{"wire 4", []byte{0}, 4, 0, 0, false},
+		{"wire 6", make([]byte, 8), 6, 0, 0, false},
+		{"wire 7", make([]byte, 8), 7, 0, 0, false},
+		{"group too deep", []byte{0x2c}, 3, maxGroupDepth, 0, false},
+	}
+
+	for _, test := range tests {
+		got, ok := pbSkip(test.d, 0, test.wire, 5, test.depth)
+		if got != test.want || ok != test.ok {
+			t.Errorf("%s: pbSkip = %d, %v, want %d, %v", test.name, got, ok, test.want, test.ok)
+		}
+	}
+}

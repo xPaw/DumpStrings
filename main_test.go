@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"debug/elf"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,5 +67,151 @@ func TestRunMainUsageOnStderr(t *testing.T) {
 
 	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "dedupe") {
 		t.Errorf("stdout %q stderr %q", stdout.String(), stderr.String())
+	}
+}
+
+func TestBuildVersion(t *testing.T) {
+	if buildVersion() == "" {
+		t.Error("empty version")
+	}
+}
+
+// writeTestELF writes an ELF file whose only read section is .rodata.
+func writeTestELF(t *testing.T, rodata string) string {
+	t.Helper()
+
+	progbits := elf.Section64{Type: uint32(elf.SHT_PROGBITS), Flags: uint64(elf.SHF_ALLOC), Addralign: 1}
+	data := buildELF([]elf.Section64{progbits}, [][]byte{[]byte(rodata)}, []string{".rodata"})
+
+	path := filepath.Join(t.TempDir(), "x.so")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	return path
+}
+
+// runFile calls run and returns what it wrote to stdout and stderr.
+func runFile(path string, opts Options, sorted bool) (stdout, stderr string, err error) {
+	var out, errOut bytes.Buffer
+
+	w := bufio.NewWriter(&out)
+	err = run(path, opts, sorted, w, &errOut)
+	w.Flush()
+
+	return out.String(), errOut.String(), err
+}
+
+var testRunOptions = Options{MinLength: 4, SymLength: 10, Protobufs: "mask", Terminated: "auto"}
+
+func TestRunSorted(t *testing.T) {
+	path := writeTestELF(t, "zebra string\x00apple string\x00zebra string\x00mango fruit\x00")
+
+	tests := []struct {
+		sorted bool
+		want   string
+	}{
+		{false, "zebra string\napple string\nzebra string\nmango fruit\n"},
+		{true, "apple string\nmango fruit\nzebra string\n"},
+	}
+
+	for _, test := range tests {
+		stdout, stderr, err := runFile(path, testRunOptions, test.sorted)
+
+		if err != nil || stderr != "" || stdout != test.want {
+			t.Errorf("sorted=%v: stdout %q, stderr %q, err %v, want %q", test.sorted, stdout, stderr, err, test.want)
+		}
+	}
+}
+
+func TestRunToolchainMarker(t *testing.T) {
+	const ruledOut = "\x01\x02\x03ruled out string\x04\x05\x06\x00"
+
+	tests := []struct {
+		name       string
+		rodata     string
+		terminated string
+		wantLine   bool
+		wantNote   bool
+	}{
+		{"auto without a marker", ruledOut, "auto", false, false},
+		{"auto with the Go marker", "\xff Go buildinf:\x00" + ruledOut, "auto", true, true},
+		{"auto with the Rust marker", "/rustc/0123abcd\x00" + ruledOut, "auto", true, true},
+		{"on with the Go marker", "\xff Go buildinf:\x00" + ruledOut, "on", false, false},
+		{"off without a marker", ruledOut, "off", true, false},
+	}
+
+	for _, test := range tests {
+		opts := testRunOptions
+		opts.Terminated = test.terminated
+
+		stdout, stderr, err := runFile(writeTestELF(t, test.rodata), opts, false)
+		if err != nil {
+			t.Errorf("%s: %v", test.name, err)
+			continue
+		}
+
+		if got := strings.Contains(stdout, "ruled out string"); got != test.wantLine {
+			t.Errorf("%s: ruled out run printed = %v, want %v", test.name, got, test.wantLine)
+		}
+
+		if got := strings.Contains(stderr, "note: ") && strings.Contains(stderr, "end-of-string rule off"); got != test.wantNote {
+			t.Errorf("%s: note printed = %v, want %v (stderr %q)", test.name, got, test.wantNote, stderr)
+		}
+	}
+}
+
+func TestRunErrors(t *testing.T) {
+	dir := t.TempDir()
+	garbage := filepath.Join(dir, "garbage")
+	if err := os.WriteFile(garbage, []byte("not a binary at all"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := runFile(filepath.Join(dir, "missing"), testRunOptions, false); err == nil {
+		t.Error("missing file: no error")
+	}
+
+	if _, _, err := runFile(garbage, testRunOptions, false); err == nil {
+		t.Error("unsupported file: no error")
+	}
+}
+
+func TestRunRecoversFromPanic(t *testing.T) {
+	path := writeTestELF(t, "some string\x00")
+
+	// A nil writer panics on the first line.
+	err := run(path, testRunOptions, false, nil, &bytes.Buffer{})
+
+	if err == nil || !strings.HasPrefix(err.Error(), "panic: ") {
+		t.Errorf("err = %v, want a recovered panic", err)
+	}
+}
+
+func TestRunPrintSections(t *testing.T) {
+	opts := testRunOptions
+	opts.PrintSections = true
+
+	stdout, _, err := runFile(writeTestELF(t, "some string\x00"), opts, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(stdout, "\n.rodata\t") || !strings.Contains(stdout, "\tread=data\n") || strings.Contains(stdout, "some string") {
+		t.Errorf("output %q", stdout)
+	}
+}
+
+func TestRunMainDumpFlags(t *testing.T) {
+	path := writeTestELF(t, "zebra string\x00apple string\x00zebra string\x00")
+
+	var stdout, stderr bytes.Buffer
+
+	if code := runMain([]string{"dump", "-sort", path}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	}
+
+	if want := "apple string\nzebra string\n"; stdout.String() != want {
+		t.Errorf("stdout = %q, want %q", stdout.String(), want)
 	}
 }

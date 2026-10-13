@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"debug/pe"
 	"encoding/binary"
+	"fmt"
 	"reflect"
 	"sort"
 	"testing"
@@ -181,5 +183,303 @@ func TestDumpSectionRewrite(t *testing.T) {
 	want := []string{"Name", "Other"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("lines = %q, want %q", got, want)
+	}
+}
+
+type testPESection struct {
+	name string
+	data []byte
+
+	// vsize is the VirtualSize; zero means len(data).
+	vsize uint32
+}
+
+// peRVA is the virtual address buildPE gives to section i.
+func peRVA(i int) uint32 { return 0x1000 * uint32(i+1) }
+
+// buildPE assembles a minimal PE32 or PE32+ image. Section i is mapped at
+// peRVA(i); a section with no data has SizeOfRawData zero. dirs maps a data
+// directory index to its RVA and size.
+func buildPE(wide bool, base uint64, secs []testPESection, dirs map[int][2]uint32) []byte {
+	le := binary.LittleEndian
+	optSize, magic, dirOff, machine := 224, uint16(0x10b), 96, uint16(0x14c)
+
+	if wide {
+		optSize, magic, dirOff, machine = 240, 0x20b, 112, 0x8664
+	}
+
+	hdrSize := 0x58 + optSize + 40*len(secs)
+	hdr := make([]byte, (hdrSize+0x1ff)&^0x1ff)
+
+	copy(hdr, "MZ")
+	le.PutUint32(hdr[0x3c:], 0x40)
+	copy(hdr[0x40:], "PE\x00\x00")
+	le.PutUint16(hdr[0x44:], machine)
+	le.PutUint16(hdr[0x46:], uint16(len(secs)))
+	le.PutUint16(hdr[0x54:], uint16(optSize))
+
+	opt := hdr[0x58:]
+	le.PutUint16(opt, magic)
+
+	if wide {
+		le.PutUint64(opt[24:], base)
+		le.PutUint32(opt[108:], 16)
+	} else {
+		le.PutUint32(opt[28:], uint32(base))
+		le.PutUint32(opt[92:], 16)
+	}
+
+	for i, d := range dirs {
+		le.PutUint32(opt[dirOff+8*i:], d[0])
+		le.PutUint32(opt[dirOff+8*i+4:], d[1])
+	}
+
+	var body []byte
+
+	for i, s := range secs {
+		h := hdr[0x58+optSize+40*i:]
+		vsize := s.vsize
+
+		if vsize == 0 {
+			vsize = uint32(len(s.data))
+		}
+
+		copy(h, s.name)
+		le.PutUint32(h[8:], vsize)
+		le.PutUint32(h[12:], peRVA(i))
+		le.PutUint32(h[16:], uint32(len(s.data)))
+
+		if len(s.data) > 0 {
+			le.PutUint32(h[20:], uint32(len(hdr)+len(body)))
+			body = append(body, s.data...)
+		}
+	}
+
+	return append(hdr, body...)
+}
+
+// peImportData returns a 0x100 byte section mapped at rva that holds an import
+// descriptor at 0x00, a delay-import descriptor at 0x30 and the hint/name
+// entries "Hi" + "ImportedFunc" at 0xc0 and "Dl" + "DelayedFunc" at 0xe0.
+// With delayVA the delay descriptor uses virtual addresses instead of RVAs.
+func peImportData(wide bool, base uint64, rva uint32, delayVA bool) []byte {
+	le := binary.LittleEndian
+	d := make([]byte, 0x100)
+
+	thunk := func(off int, v uint64) {
+		if wide {
+			le.PutUint64(d[off:], v)
+		} else {
+			le.PutUint32(d[off:], uint32(v))
+		}
+	}
+
+	le.PutUint32(d[0x00:], rva+0x80)
+	thunk(0x80, uint64(rva)+0xc0)
+
+	attrs, table, name := uint32(1), uint64(rva)+0xa0, uint64(rva)+0xe0
+	if delayVA {
+		attrs, table, name = 0, table+base, name+base
+	}
+
+	le.PutUint32(d[0x30:], attrs)
+	le.PutUint32(d[0x30+16:], uint32(table))
+	thunk(0xa0, name)
+
+	copy(d[0xc0:], "HiImportedFunc\x00")
+	copy(d[0xe0:], "DlDelayedFunc\x00")
+
+	return d
+}
+
+// parseAndDump parses data and dumps every section, returning the binary, the
+// lines and the warnings.
+func parseAndDump(t *testing.T, data []byte, terminated bool) (*Binary, []string, []string) {
+	t.Helper()
+
+	var warnings []string
+
+	b, err := Parse(data, "", func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var lines []string
+
+	d := &Dumper{
+		opts:       Options{MinLength: 4, SymLength: 10, Protobufs: "mask"},
+		sink:       func(l string) { lines = append(lines, l) },
+		terminated: terminated,
+	}
+	d.Dump(b)
+
+	return b, lines, warnings
+}
+
+func TestPESectionSelection(t *testing.T) {
+	for _, wide := range []bool{false, true} {
+		img := buildPE(wide, 0x10000000, []testPESection{
+			{name: ".text", data: []byte("text only string\x00")},
+			{name: ".data"},
+			{name: ".data", data: []byte("data string one\x00data string two\x00")},
+			{name: ".reloc", data: []byte("other section string\x00")},
+			{name: ".rdata", data: []byte("rdata string one\x00")},
+		}, nil)
+
+		b, lines, warnings := parseAndDump(t, img, false)
+
+		want := []string{"data string one", "data string two", "rdata string one"}
+		if !reflect.DeepEqual(lines, want) {
+			t.Errorf("wide=%v: lines = %q, want %q", wide, lines, want)
+		}
+
+		if len(warnings) != 0 || b.Readable != 3 || len(b.Fallback) != 1 {
+			t.Errorf("wide=%v: warnings %q, readable %d, fallback %d", wide, warnings, b.Readable, len(b.Fallback))
+		}
+
+		var reads []string
+		for _, h := range b.Headers {
+			reads = append(reads, h.Name+"="+h.Read)
+		}
+
+		wantReads := []string{".text=fallback", ".data=", ".data=data", ".reloc=", ".rdata=data"}
+		if !reflect.DeepEqual(reads, wantReads) {
+			t.Errorf("wide=%v: headers = %q, want %q", wide, reads, wantReads)
+		}
+	}
+}
+
+func TestPEVirtualSizeClamp(t *testing.T) {
+	img := buildPE(true, 0x140000000, []testPESection{
+		{name: ".data", data: []byte("kept string\x00PADDING bytes after\x00"), vsize: 12},
+	}, nil)
+
+	_, lines, _ := parseAndDump(t, img, false)
+
+	if want := []string{"kept string"}; !reflect.DeepEqual(lines, want) {
+		t.Errorf("lines = %q, want %q", lines, want)
+	}
+}
+
+func TestPETextFallback(t *testing.T) {
+	text := testPESection{name: ".text", data: []byte("code string here\x00")}
+	ruledOut := []byte("\x00\x01\x02\x03ruled out string\x04\x05\x06\x00")
+
+	tests := []struct {
+		name       string
+		data       []byte
+		terminated bool
+		want       []string
+	}{
+		{"data without a line", []byte("ab\x00"), false, []string{"code string here"}},
+		{"data with a line", []byte("data string one\x00"), false, []string{"data string one"}},
+		{"only a masked protobuf", append(descriptor("my/thing.proto"), 0), false, nil},
+		{"only a ruled out run", ruledOut, true, nil},
+		{"ruled out run with the rule off", ruledOut, false, []string{"ruled out string"}},
+	}
+
+	for _, test := range tests {
+		for _, wide := range []bool{false, true} {
+			img := buildPE(wide, 0x10000000, []testPESection{text, {name: ".rdata", data: test.data}}, nil)
+
+			if _, lines, _ := parseAndDump(t, img, test.terminated); !reflect.DeepEqual(lines, test.want) {
+				t.Errorf("%s (wide=%v): lines = %q, want %q", test.name, wide, lines, test.want)
+			}
+		}
+	}
+}
+
+func TestPETruncatedDataSkipsFallback(t *testing.T) {
+	img := buildPE(true, 0x140000000, []testPESection{
+		{name: ".text", data: []byte("code string here\x00")},
+		{name: ".data", data: make([]byte, 0x40)},
+	}, nil)
+
+	b, lines, warnings := parseAndDump(t, img, false)
+
+	if want := []string{"code string here"}; !reflect.DeepEqual(lines, want) || b.Truncated || len(warnings) != 0 {
+		t.Errorf("intact: lines %q, truncated %v, warnings %q", lines, b.Truncated, warnings)
+	}
+
+	b, lines, warnings = parseAndDump(t, img[:len(img)-0x20], false)
+
+	if len(lines) != 0 || !b.Truncated || len(warnings) != 1 {
+		t.Errorf("truncated: lines %q, truncated %v, warnings %q", lines, b.Truncated, warnings)
+	}
+}
+
+func TestPEImports(t *testing.T) {
+	const (
+		importDir = 1
+		delayDir  = 13
+	)
+
+	imports := [2]uint32{peRVA(0), 0x28}
+	delays := [2]uint32{peRVA(0) + 0x30, 0x40}
+
+	tests := []struct {
+		name      string
+		wide      bool
+		delayVA   bool
+		dirs      map[int][2]uint32
+		wantHints []uint32
+		want      []string
+	}{
+		{"no directories", false, false, nil, nil, []string{"HiImportedFunc", "DlDelayedFunc"}},
+		{"imports", false, false, map[int][2]uint32{importDir: imports}, []uint32{0x10c0}, []string{"ImportedFunc", "DlDelayedFunc"}},
+		{"imports wide", true, false, map[int][2]uint32{importDir: imports}, []uint32{0x10c0}, []string{"ImportedFunc", "DlDelayedFunc"}},
+		{"delay imports", false, false, map[int][2]uint32{delayDir: delays}, []uint32{0x10e0}, []string{"HiImportedFunc", "DelayedFunc"}},
+		{"delay imports wide", true, false, map[int][2]uint32{delayDir: delays}, []uint32{0x10e0}, []string{"HiImportedFunc", "DelayedFunc"}},
+		{"both", false, false, map[int][2]uint32{importDir: imports, delayDir: delays}, []uint32{0x10c0, 0x10e0}, []string{"ImportedFunc", "DelayedFunc"}},
+		{"both wide", true, false, map[int][2]uint32{importDir: imports, delayDir: delays}, []uint32{0x10c0, 0x10e0}, []string{"ImportedFunc", "DelayedFunc"}},
+		{"delay virtual addresses", false, true, map[int][2]uint32{delayDir: delays}, []uint32{0x10e0}, []string{"HiImportedFunc", "DelayedFunc"}},
+		{"delay virtual addresses wide", true, true, map[int][2]uint32{importDir: imports, delayDir: delays}, []uint32{0x10c0}, []string{"ImportedFunc", "DlDelayedFunc"}},
+	}
+
+	for _, test := range tests {
+		base := uint64(0x10000000)
+		if test.wide {
+			base = 0x140000000
+		}
+
+		img := buildPE(test.wide, base, []testPESection{{name: ".rdata", data: peImportData(test.wide, base, peRVA(0), test.delayVA)}}, test.dirs)
+
+		f, err := pe.NewFile(bytes.NewReader(img))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var secs []peSection
+		for _, s := range f.Sections {
+			secs = append(secs, peSection{s.VirtualAddress, s.VirtualSize, s.Size, s.Offset})
+		}
+
+		if got := sortedKeys(peImportHints(img, f, secs)); !reflect.DeepEqual(got, test.wantHints) {
+			t.Errorf("%s: hints = %x, want %x", test.name, got, test.wantHints)
+		}
+
+		if _, lines, _ := parseAndDump(t, img, false); !reflect.DeepEqual(lines, test.want) {
+			t.Errorf("%s: lines = %q, want %q", test.name, lines, test.want)
+		}
+	}
+}
+
+func TestDelayImportsSkipUnusableDescriptors(t *testing.T) {
+	r := flatImage(0x1000)
+	put32 := func(off int, v uint32) { binary.LittleEndian.PutUint32(r.data[off:], v) }
+
+	// Descriptor 1 has no name table, descriptor 2 holds a virtual address
+	// below the image base, descriptor 3 is usable.
+	put32(0x100, 1)
+	put32(0x120+16, 0x100)
+	put32(0x140, 1)
+	put32(0x140+16, 0x800)
+	binary.LittleEndian.PutUint32(r.data[0x800:], 0x900)
+
+	hints := map[uint32]struct{}{}
+	r.walkDelayImports(0x100, false, 0x400000, hints)
+
+	if got, want := sortedKeys(hints), []uint32{0x900}; !reflect.DeepEqual(got, want) {
+		t.Errorf("hints = %x, want %x", got, want)
 	}
 }
