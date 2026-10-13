@@ -103,7 +103,16 @@ func parseELF(data []byte, warn Warner) (*Binary, error) {
 			continue
 		}
 
+		width := 0
+		if kind == KindStrings && s.Flags&elf.SHF_STRINGS != 0 && (s.Entsize == 2 || s.Entsize == 4) {
+			width = int(s.Entsize)
+		}
+
 		h.Read = kind.String()
+		if width != 0 {
+			h.Read += fmt.Sprintf("/u%d", width*8)
+		}
+
 		b.Headers = append(b.Headers, h)
 
 		sdata := fileSlice(data, s.Offset, s.FileSize, s.Name, warn)
@@ -114,13 +123,20 @@ func parseELF(data []byte, warn Warner) (*Binary, error) {
 		b.Readable++
 
 		if kind != KindNote {
-			b.Sections = append(b.Sections, Section{
+			sect := Section{
 				Name:    s.Name,
 				Kind:    kind,
 				Data:    sdata,
 				Addr:    s.Addr,
 				EntSize: s.Entsize,
-			})
+			}
+
+			if width != 0 {
+				sect.Data = decodeWide(sdata, width, f.ByteOrder)
+				sect.Wide = true
+			}
+
+			b.Sections = append(b.Sections, sect)
 			continue
 		}
 
@@ -137,6 +153,29 @@ func parseELF(data []byte, warn Warner) (*Binary, error) {
 	}
 
 	return b, nil
+}
+
+// decodeWide narrows a section of 16 or 32-bit code units to one byte per
+// unit: the ASCII byte for tab to carriage return and printable ASCII, and NUL
+// for every other code point, which then separates strings. A trailing partial
+// unit is ignored.
+func decodeWide(data []byte, width int, order binary.ByteOrder) []byte {
+	out := make([]byte, len(data)/width)
+
+	for i := range out {
+		var u uint32
+		if width == 2 {
+			u = uint32(order.Uint16(data[i*2:]))
+		} else {
+			u = order.Uint32(data[i*4:])
+		}
+
+		if u < 256 && isRunByte[u] {
+			out[i] = byte(u)
+		}
+	}
+
+	return out
 }
 
 // elfNotes returns the descriptor of every note record in a note section.

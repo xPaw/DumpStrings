@@ -45,6 +45,9 @@ type Section struct {
 	Addr    uint64
 	EntSize uint64
 
+	// Wide marks a section that was narrowed from 16 or 32-bit code units.
+	Wide bool
+
 	// Rewrite maps the offset of a run start to the offset the run is emitted
 	// from instead; the end of the run is unchanged.
 	Rewrite map[int]int
@@ -223,7 +226,7 @@ func (d *Dumper) Dump(b *Binary) {
 
 	if d.opts.Protobufs == "mask" {
 		for _, s := range b.Sections {
-			if s.Kind != KindNote {
+			if s.Kind != KindNote && !s.Wide {
 				MaskProtobufs(s.Data, nil)
 			}
 		}
