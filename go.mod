@@ -1,5 +1,5 @@
 module DumpStrings
 
-go 1.19
+go 1.24
 
-require github.com/ianlancetaylor/demangle v0.0.0-20251118225945-96ee0021ea0f
+require github.com/ianlancetaylor/demangle v0.0.0-20261012173340-cbb8aaea4290
