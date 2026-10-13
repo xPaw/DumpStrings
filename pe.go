@@ -112,19 +112,35 @@ func (r *peReader) importNames(table uint32, wide bool, base uint64, va bool, ou
 	}
 }
 
+// peDirectories returns the data directories and image base of the optional
+// header, and whether the image is PE32+. Without an optional header there are
+// no directories.
+func peDirectories(f *pe.File) (dirs []pe.DataDirectory, base uint64, wide bool) {
+	switch oh := f.OptionalHeader.(type) {
+	case *pe.OptionalHeader32:
+		return oh.DataDirectory[:], uint64(oh.ImageBase), false
+	case *pe.OptionalHeader64:
+		return oh.DataDirectory[:], oh.ImageBase, true
+	}
+
+	return nil, 0, false
+}
+
+// peIsCLR reports whether the image has a CLR runtime header, as a .NET
+// assembly does.
+func peIsCLR(f *pe.File) bool {
+	const clr = pe.IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR
+
+	dirs, _, _ := peDirectories(f)
+
+	return len(dirs) > clr && (dirs[clr].VirtualAddress != 0 || dirs[clr].Size != 0)
+}
+
 // peImportHints returns the RVAs of the hint/name entries of every by-name
 // import and delay import of the image.
 func peImportHints(data []byte, f *pe.File, secs []peSection) map[uint32]struct{} {
-	var dirs []pe.DataDirectory
-	var base uint64
-	wide := false
-
-	switch oh := f.OptionalHeader.(type) {
-	case *pe.OptionalHeader32:
-		dirs, base = oh.DataDirectory[:], uint64(oh.ImageBase)
-	case *pe.OptionalHeader64:
-		dirs, base, wide = oh.DataDirectory[:], oh.ImageBase, true
-	default:
+	dirs, base, wide := peDirectories(f)
+	if dirs == nil {
 		return nil
 	}
 
@@ -263,11 +279,12 @@ func peSizeOfHeaders(f *pe.File) uint32 {
 }
 
 // parsePE selects every .data and .rdata section, and every .text section as
-// the fallback. A section whose raw data starts at offset 0 or inside the
-// headers has no data of its own and is skipped. The fallback is dropped when
-// a data section runs past the end of the file, since its missing bytes may
-// hold the lines, and the binary is then readable only through the data
-// bytes that are present.
+// the fallback. A native image without an .rdata section keeps its read-only
+// data in .text, which is then read as a data section instead. A section whose
+// raw data starts at offset 0 or inside the headers has no data of its own and
+// is skipped. The fallback is dropped when a data section runs past the end of
+// the file, since its missing bytes may hold the lines, and the binary is then
+// readable only through the data bytes that are present.
 func parsePE(data []byte, warn Warner) (*Binary, error) {
 	f, err := pe.NewFile(bytes.NewReader(data))
 	if err != nil {
@@ -276,10 +293,19 @@ func parsePE(data []byte, warn Warner) (*Binary, error) {
 
 	b := &Binary{}
 	headers := peSizeOfHeaders(f)
+	textKind := KindData
 
 	secs := make([]peSection, 0, len(f.Sections))
 	for _, s := range f.Sections {
 		secs = append(secs, peSection{s.VirtualAddress, s.VirtualSize, s.Size, s.Offset})
+
+		if s.Name == ".rdata" {
+			textKind = KindFallback
+		}
+	}
+
+	if peIsCLR(f) {
+		textKind = KindFallback
 	}
 
 	hints := peImportHints(data, f, secs)
@@ -299,7 +325,7 @@ func parsePE(data []byte, warn Warner) (*Binary, error) {
 		case ".data", ".rdata":
 			kind = KindData
 		case ".text":
-			kind = KindFallback
+			kind = textKind
 		default:
 			b.Headers = append(b.Headers, h)
 			continue

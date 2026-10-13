@@ -370,11 +370,128 @@ func TestPETextFallback(t *testing.T) {
 	}
 }
 
+// peCLR is the data directory of a CLR runtime header, which marks a .NET
+// assembly.
+var peCLR = map[int][2]uint32{pe.IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR: {peRVA(0), 0x48}}
+
+func TestPEMergedText(t *testing.T) {
+	text := []byte("code string here\x00\x00\x01\x02\x03ruled out string\x04\x05\x06\x00")
+
+	tests := []struct {
+		name      string
+		secs      []testPESection
+		dirs      map[int][2]uint32
+		want      []string
+		wantReads []string
+		sections  int
+		fallback  int
+	}{
+		{
+			"native without .rdata",
+			[]testPESection{{name: ".text", data: text}, {name: ".data", data: []byte("data string one\x00")}},
+			nil,
+			[]string{"code string here", "data string one"},
+			[]string{".text=data", ".data=data"},
+			2, 0,
+		},
+		{
+			"only .text",
+			[]testPESection{{name: ".text", data: text}},
+			nil,
+			[]string{"code string here"},
+			[]string{".text=data"},
+			1, 0,
+		},
+		{
+			"CLR header",
+			[]testPESection{{name: ".text", data: text}, {name: ".data", data: []byte("data string one\x00")}},
+			peCLR,
+			[]string{"data string one"},
+			[]string{".text=fallback", ".data=data"},
+			1, 1,
+		},
+		{
+			"CLR header without data lines",
+			[]testPESection{{name: ".text", data: text}, {name: ".data", data: []byte("ab\x00")}},
+			peCLR,
+			[]string{"code string here", "ruled out string"},
+			[]string{".text=fallback", ".data=data"},
+			1, 1,
+		},
+		{
+			"with .rdata",
+			[]testPESection{{name: ".text", data: text}, {name: ".data", data: []byte("data string one\x00")}, {name: ".rdata"}},
+			nil,
+			[]string{"data string one"},
+			[]string{".text=fallback", ".data=data", ".rdata="},
+			1, 1,
+		},
+	}
+
+	for _, test := range tests {
+		for _, wide := range []bool{false, true} {
+			img := buildPE(wide, 0x10000000, test.secs, test.dirs)
+
+			b, lines, warnings := parseAndDump(t, img, peOptions(true))
+
+			var reads []string
+			for _, h := range b.Headers {
+				reads = append(reads, h.Name+"="+h.Read)
+			}
+
+			if !reflect.DeepEqual(lines, test.want) || !reflect.DeepEqual(reads, test.wantReads) || len(warnings) != 0 {
+				t.Errorf("%s (wide=%v): lines %q, headers %q, warnings %q", test.name, wide, lines, reads, warnings)
+			}
+
+			if len(b.Sections) != test.sections || len(b.Fallback) != test.fallback {
+				t.Errorf("%s (wide=%v): sections %d, fallback %d", test.name, wide, len(b.Sections), len(b.Fallback))
+			}
+
+			for _, s := range b.Sections {
+				if !s.Mask || !s.EndRule {
+					t.Errorf("%s (wide=%v): section mask %v, end rule %v", test.name, wide, s.Mask, s.EndRule)
+				}
+			}
+		}
+	}
+}
+
+func TestPEMergedTextImports(t *testing.T) {
+	dirs := map[int][2]uint32{
+		pe.IMAGE_DIRECTORY_ENTRY_IMPORT:       {peRVA(0), 0x28},
+		pe.IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT: {peRVA(0) + 0x30, 0x40},
+	}
+
+	for _, wide := range []bool{false, true} {
+		img := buildPE(wide, 0x10000000, []testPESection{{name: ".text", data: peImportData(wide, 0x10000000, peRVA(0), false)}}, dirs)
+
+		b, lines, _ := parseAndDump(t, img, peOptions(true))
+
+		if want := []string{"ImportedFunc", "DelayedFunc"}; !reflect.DeepEqual(lines, want) || len(b.Sections) != 1 || len(b.Sections[0].Rewrite) != 4 {
+			t.Errorf("wide=%v: lines %q, want %q, sections %d", wide, lines, want, len(b.Sections))
+		}
+	}
+}
+
+func TestPEMergedTextTruncated(t *testing.T) {
+	text := append([]byte("code string here\x00"), make([]byte, 0x40)...)
+	img := buildPE(true, 0x140000000, []testPESection{
+		{name: ".data", data: []byte("data string one\x00")},
+		{name: ".text", data: text},
+	}, nil)
+
+	b, lines, warnings := parseAndDump(t, img[:len(img)-0x20], peOptions(true))
+
+	if want := []string{"data string one", "code string here"}; !reflect.DeepEqual(lines, want) || len(b.Sections) != 2 || !b.Readable || len(warnings) != 1 {
+		t.Errorf("lines %q, sections %d, readable %v, warnings %q", lines, len(b.Sections), b.Readable, warnings)
+	}
+}
+
 func TestPETruncatedDataSkipsFallback(t *testing.T) {
 	img := buildPE(true, 0x140000000, []testPESection{
 		{name: ".text", data: []byte("code string here\x00")},
 		{name: ".data", data: make([]byte, 0x40)},
-	}, nil)
+	}, peCLR)
 
 	b, lines, warnings := parseAndDump(t, img, peOptions(false))
 
@@ -469,14 +586,14 @@ func TestPESectionWithoutFileData(t *testing.T) {
 	}
 
 	// A fallback section without file data is skipped too.
-	img := buildPE(true, 0x140000000, []testPESection{{name: ".text", data: []byte("code string here\x00")}}, nil)
+	img := buildPE(true, 0x140000000, []testPESection{{name: ".text", data: []byte("code string here\x00")}}, peCLR)
 	writePESectionOffset(img, true, 0, 0, 0x200)
 
 	var warnings []string
 
 	b, err := Parse(img, "auto", func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) })
-	if err != nil || b.Readable || len(b.Fallback) != 0 || len(warnings) != 1 {
-		t.Errorf("fallback without file data: err %v, readable %v, fallback %d, warnings %q", err, b.Readable, len(b.Fallback), warnings)
+	if err != nil || b.Readable || len(b.Fallback) != 0 || len(warnings) != 1 || b.Headers[0].Read != "fallback" {
+		t.Errorf("fallback without file data: err %v, readable %v, fallback %d, warnings %q, header %+v", err, b.Readable, len(b.Fallback), warnings, b.Headers[0])
 	}
 }
 

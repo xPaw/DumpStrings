@@ -67,7 +67,7 @@ Output is one string per line with `\t`, `\v`, `\n`, `\r` and `\f` escaped. With
 Two filters remove noise that plain `strings` would print, the first of them opt-in:
 
 - **Protobuf masking** (`-mask-protobufs`, off by default): serialized `FileDescriptorProto` blobs (they start with a `*.proto` file name) are blanked before extraction. Without the flag they are read as ordinary data.
-- **End-of-string rule**: in data sections (PE `.data`/`.rdata`, ELF `.rodata`/`.data`, Mach-O `__const`/`__data`) a run is kept only if a NUL byte follows it, it ends the section, or it sits inside text. This drops fragments of binary data that look like text. `auto` turns the rule off for Go and Rust binaries, whose strings are not NUL-terminated (a note is printed on stderr); use `-terminated=off` to disable it everywhere or `on` to force it.
+- **End-of-string rule**: in data sections (PE `.data`/`.rdata`, and `.text` when a non-.NET PE has no `.rdata`; ELF `.rodata`/`.data`; Mach-O `__const`/`__data`) a run is kept only if a NUL byte follows it, it ends the section, or it sits inside text. This drops fragments of binary data that look like text. `auto` turns the rule off for Go and Rust binaries, whose strings are not NUL-terminated (a note is printed on stderr); use `-terminated=off` to disable it everywhere or `on` to force it.
 
 Exit codes: `0` success, `1` the file is unreadable, unsupported, fails to parse or has no readable sections (`-print-sections` still lists the sections of such a file and exits `0`), `2` usage error (usage is printed on stderr). Problems with a single section, such as truncation, are warnings on stderr and the readable bytes are still dumped. `-h` prints usage and exits `0`.
 
