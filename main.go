@@ -109,7 +109,7 @@ func runDump(args []string, stdout, stderr io.Writer) int {
 	flags.IntVar(&opts.MinLength, "min-length", 4, "minimum length of a string")
 	flags.IntVar(&opts.SymLength, "sym-length", 10, "maximum length of a string to filter out when the string contains majority of non a-Z characters")
 	flags.BoolVar(&opts.PrintSections, "print-sections", false, "print every section with its type, flags, address, size and how it is read")
-	flags.StringVar(&opts.Protobufs, "protobufs", "mask", "how to treat serialized protobuf descriptors: mask (blank them) or keep")
+	flags.BoolVar(&opts.MaskProtobufs, "mask-protobufs", false, "blank serialized protobuf descriptors (.proto file descriptors embedded by protoc) before extracting strings")
 	flags.StringVar(&opts.Terminated, "terminated", "auto", "keep only data section strings that end in a NUL byte or lie in text: auto (off for Go and Rust binaries), on or off")
 	sorted := flags.Bool("sort", false, "print byte-order sorted unique lines instead of section order")
 
@@ -134,10 +134,6 @@ func runDump(args []string, stdout, stderr io.Writer) int {
 		opts.Format = *format
 	default:
 		return usageError("invalid -format value %q: want auto, pe, elf or macho\n", *format)
-	}
-
-	if opts.Protobufs != "mask" && opts.Protobufs != "keep" {
-		return usageError("invalid -protobufs value %q: want mask or keep\n", opts.Protobufs)
 	}
 
 	if opts.Terminated != "auto" && opts.Terminated != "on" && opts.Terminated != "off" {

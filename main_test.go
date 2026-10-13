@@ -26,7 +26,6 @@ func TestRunMainExitCodes(t *testing.T) {
 		{"unknown command", []string{"bogus"}, 2},
 		{"dump help", []string{"dump", "-h"}, 0},
 		{"dump unknown flag", []string{"dump", "-bogus", bin}, 2},
-		{"dump bad protobufs", []string{"dump", "-protobufs=x", bin}, 2},
 		{"dump bad terminated", []string{"dump", "-terminated=x", bin}, 2},
 		{"dump bad format", []string{"dump", "-format=x", bin}, 2},
 		{"dump no positional", []string{"dump"}, 2},
@@ -102,7 +101,7 @@ func runFile(path string, opts Options, sorted bool) (stdout, stderr string, err
 	return out.String(), errOut.String(), err
 }
 
-var testRunOptions = Options{MinLength: 4, SymLength: 10, Protobufs: "mask", Terminated: "auto"}
+var testRunOptions = Options{MinLength: 4, SymLength: 10, MaskProtobufs: true, Terminated: "auto"}
 
 func TestRunSorted(t *testing.T) {
 	path := writeTestELF(t, "zebra string\x00apple string\x00zebra string\x00mango fruit\x00")

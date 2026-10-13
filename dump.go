@@ -87,9 +87,8 @@ type Options struct {
 	Demangle      bool
 	PrintSections bool
 
-	// Protobufs is "mask" to blank serialized protobuf descriptors before
-	// extraction, or "keep" to read them as ordinary data.
-	Protobufs string
+	// MaskProtobufs blanks serialized protobuf descriptors before extraction.
+	MaskProtobufs bool
 
 	// Terminated is "on" to apply the end-of-string rule to data sections,
 	// "off" to skip it, or "auto" to apply it unless the file was built by
@@ -224,7 +223,7 @@ func (d *Dumper) Dump(b *Binary) {
 		}
 	}
 
-	if d.opts.Protobufs == "mask" {
+	if d.opts.MaskProtobufs {
 		for _, s := range b.Sections {
 			if s.Kind != KindNote && !s.Wide {
 				MaskProtobufs(s.Data, nil)

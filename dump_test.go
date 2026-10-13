@@ -5,6 +5,7 @@ import (
 	"debug/elf"
 	"encoding/binary"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -219,31 +220,43 @@ func TestHasLine(t *testing.T) {
 func TestDumpMasksOnlyPlainSections(t *testing.T) {
 	blob := append(descriptor("x/y.proto"), 0)
 
-	count := func(protobufs string, kinds ...SectionKind) int {
+	count := func(mask bool, kinds ...SectionKind) int {
 		b := &Binary{}
 		for _, kind := range kinds {
 			b.Sections = append(b.Sections, Section{Kind: kind, Data: bytes.Clone(blob), Wide: kind == KindStrings})
 		}
 
 		lines := 0
-		d := Dumper{opts: Options{MinLength: 4, SymLength: 10, Protobufs: protobufs}, sink: func(string) { lines++ }}
+		d := Dumper{opts: Options{MinLength: 4, SymLength: 10, MaskProtobufs: mask}, sink: func(string) { lines++ }}
 		d.Dump(b)
 
 		return lines
 	}
 
-	one := count("keep", KindData)
+	one := count(false, KindData)
 	if one == 0 {
 		t.Fatal("descriptor produced no lines")
 	}
 
 	// The note and the narrowed (Wide) section are not masked.
-	if got := count("mask", KindData, KindNote, KindStrings); got != 2*one {
+	if got := count(true, KindData, KindNote, KindStrings); got != 2*one {
 		t.Errorf("masked: %d lines, want %d", got, 2*one)
 	}
 
-	if got := count("keep", KindData, KindNote, KindStrings); got != 3*one {
+	if got := count(false, KindData, KindNote, KindStrings); got != 3*one {
 		t.Errorf("kept: %d lines, want %d", got, 3*one)
+	}
+}
+
+func TestDumpDoesNotMaskByDefault(t *testing.T) {
+	b := &Binary{Sections: []Section{{Kind: KindData, Data: append(descriptor("x/y.proto"), 0)}}}
+
+	var got []string
+	d := Dumper{opts: Options{MinLength: 4, SymLength: 10}, sink: func(l string) { got = append(got, l) }}
+	d.Dump(b)
+
+	if !slices.ContainsFunc(got, func(l string) bool { return strings.Contains(l, "x/y.proto") }) {
+		t.Errorf("descriptor name missing from %q", got)
 	}
 }
 

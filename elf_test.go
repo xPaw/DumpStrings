@@ -114,7 +114,7 @@ func dumpLines(t *testing.T, data []byte) []string {
 	}
 
 	var lines []string
-	d := &Dumper{opts: Options{MinLength: 4, Protobufs: "mask"}, sink: func(l string) { lines = append(lines, l) }}
+	d := &Dumper{opts: Options{MinLength: 4, MaskProtobufs: true}, sink: func(l string) { lines = append(lines, l) }}
 	d.Dump(b)
 
 	return lines

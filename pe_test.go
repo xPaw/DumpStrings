@@ -307,7 +307,7 @@ func parseAndDump(t *testing.T, data []byte, terminated bool) (*Binary, []string
 	var lines []string
 
 	d := &Dumper{
-		opts:       Options{MinLength: 4, SymLength: 10, Protobufs: "mask"},
+		opts:       Options{MinLength: 4, SymLength: 10, MaskProtobufs: true},
 		sink:       func(l string) { lines = append(lines, l) },
 		terminated: terminated,
 	}
