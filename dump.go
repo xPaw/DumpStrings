@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"iter"
 )
 
 // SectionKind tells how the bytes of a section were laid out by the toolchain.
@@ -43,6 +44,10 @@ type Section struct {
 	Data    []byte
 	Addr    uint64
 	EntSize uint64
+
+	// Rewrite maps the offset of a run start to the offset the run is emitted
+	// from instead; the end of the run is unchanged.
+	Rewrite map[int]int
 }
 
 // SectionHeader describes one section of the binary for -print-sections.
@@ -104,23 +109,29 @@ var isRunByte = func() (t [256]bool) {
 	return t
 }()
 
-// splitRuns calls fn with every maximal run of string bytes in buf.
-func splitRuns(buf []byte, fn func(run []byte)) {
-	start := -1
+// splitRuns yields the offset and bytes of every maximal run of string bytes
+// in buf.
+func splitRuns(buf []byte) iter.Seq2[int, []byte] {
+	return func(yield func(int, []byte) bool) {
+		start := -1
 
-	for i, c := range buf {
-		if isRunByte[c] {
-			if start < 0 {
-				start = i
+		for i, c := range buf {
+			if isRunByte[c] {
+				if start < 0 {
+					start = i
+				}
+			} else if start >= 0 {
+				if !yield(start, buf[start:i]) {
+					return
+				}
+
+				start = -1
 			}
-		} else if start >= 0 {
-			fn(buf[start:i])
-			start = -1
 		}
-	}
 
-	if start >= 0 {
-		fn(buf[start:])
+		if start >= 0 {
+			yield(start, buf[start:])
+		}
 	}
 }
 
@@ -128,10 +139,26 @@ func splitRuns(buf []byte, fn func(run []byte)) {
 type Dumper struct {
 	opts Options
 	sink Sink
+}
 
-	// OnProto, when set, is called with the name and size of every masked
-	// protobuf descriptor.
-	OnProto func(name []byte, size int)
+// keeps reports whether a run passes the minimum length and the symbol filter.
+func (d *Dumper) keeps(run []byte) bool {
+	if len(run) < d.opts.MinLength {
+		return false
+	}
+
+	return len(run) > d.opts.SymLength || !UtilIsMajoritySymbols(string(run))
+}
+
+// hasLine reports whether the unmodified runs of s produce at least one line.
+func (d *Dumper) hasLine(s Section) bool {
+	for _, run := range splitRuns(s.Data) {
+		if d.keeps(run) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // DumpSection emits the strings of one section and returns how many lines it
@@ -139,18 +166,16 @@ type Dumper struct {
 func (d *Dumper) DumpSection(s Section) int {
 	lines := 0
 
-	splitRuns(s.Data, func(run []byte) {
-		if len(run) < d.opts.MinLength {
-			return
+	for off, run := range splitRuns(s.Data) {
+		if to, ok := s.Rewrite[off]; ok && to < off+len(run) {
+			run = run[to-off:]
 		}
 
-		str := string(run)
-
-		if len(str) <= d.opts.SymLength && UtilIsMajoritySymbols(str) {
-			return
+		if !d.keeps(run) {
+			continue
 		}
 
-		str = UtilEscape(str)
+		str := UtilEscape(string(run))
 
 		if d.opts.Demangle {
 			str = UtilDemangle(str)
@@ -158,7 +183,7 @@ func (d *Dumper) DumpSection(s Section) int {
 
 		d.sink(str)
 		lines++
-	})
+	}
 
 	return lines
 }
@@ -171,20 +196,20 @@ func (d *Dumper) Dump(b *Binary) {
 	needFallback := false
 
 	if len(b.Fallback) > 0 && !b.Truncated {
-		counter := Dumper{opts: d.opts, sink: func(string) {}}
-		lines := 0
+		needFallback = true
 
 		for _, s := range b.Sections {
-			lines += counter.DumpSection(s)
+			if d.hasLine(s) {
+				needFallback = false
+				break
+			}
 		}
-
-		needFallback = lines == 0
 	}
 
 	if d.opts.Protobufs == "mask" {
 		for _, s := range b.Sections {
 			if s.Kind != KindNote {
-				MaskProtobufs(s.Data, d.OnProto)
+				MaskProtobufs(s.Data, nil)
 			}
 		}
 	}

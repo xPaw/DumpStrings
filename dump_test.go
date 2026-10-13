@@ -11,9 +11,9 @@ import (
 func TestSplitRuns(t *testing.T) {
 	var got []string
 
-	splitRuns([]byte("ab\x00cd\tef\x80gh\x7fij\x01"), func(run []byte) {
+	for _, run := range splitRuns([]byte("ab\x00cd\tef\x80gh\x7fij\x01")) {
 		got = append(got, string(run))
-	})
+	}
 
 	want := []string{"ab", "cd\tef", "gh", "ij"}
 	if !reflect.DeepEqual(got, want) {
