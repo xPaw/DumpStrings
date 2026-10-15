@@ -181,6 +181,8 @@ type testPESection struct {
 
 	// vsize is the VirtualSize; zero means len(data).
 	vsize uint32
+
+	flags uint32
 }
 
 // peRVA is the virtual address buildPE gives to section i.
@@ -237,6 +239,7 @@ func buildPE(wide bool, base uint64, secs []testPESection, dirs map[int][2]uint3
 		le.PutUint32(h[8:], vsize)
 		le.PutUint32(h[12:], peRVA(i))
 		le.PutUint32(h[16:], uint32(len(s.data)))
+		le.PutUint32(h[36:], s.flags)
 
 		if len(s.data) > 0 {
 			le.PutUint32(h[20:], uint32(len(hdr)+len(body)))
@@ -720,6 +723,223 @@ func TestPEImports(t *testing.T) {
 		if _, lines, _ := parseAndDump(t, img, peOptions(false)); !reflect.DeepEqual(lines, test.want) {
 			t.Errorf("%s: lines = %q, want %q", test.name, lines, test.want)
 		}
+	}
+}
+
+// appendLea appends to text, code mapped at addr, a lea rax, [rip+disp] that
+// refers to target.
+func appendLea(text []byte, addr, target uint32) []byte {
+	next := addr + uint32(len(text)) + 7
+	text = append(text, 0x48, 0x8D, 0x05)
+
+	return binary.LittleEndian.AppendUint32(text, target-next)
+}
+
+// gluePE builds an image whose .rdata holds rdata. The offsets in refs are
+// referred to by RIP-relative lea instructions in .text when lea is set, and
+// by relocated pointers in .data otherwise.
+func gluePE(wide, lea bool, rdata string, refs []uint32) []byte {
+	le := binary.LittleEndian
+	textRVA, rdataRVA, dataRVA := peRVA(0), peRVA(1), peRVA(2)
+
+	base := uint64(0x10000000)
+	relocType := uint16(relocHighLow)
+
+	if wide {
+		base = 0x140000000
+		relocType = relocDir64
+	}
+
+	var text, data []byte
+
+	reloc := le.AppendUint32(nil, dataRVA)
+	reloc = le.AppendUint32(reloc, 8)
+
+	for _, off := range refs {
+		target := rdataRVA + off
+
+		if lea {
+			text = appendLea(text, textRVA, target)
+			continue
+		}
+
+		reloc = le.AppendUint16(reloc, relocType<<12|uint16(len(data)))
+
+		if wide {
+			data = le.AppendUint64(data, base+uint64(target))
+		} else {
+			data = le.AppendUint32(data, uint32(base)+target)
+		}
+	}
+
+	le.PutUint32(reloc[4:], uint32(len(reloc)))
+	text = append(text, 0xC3)
+
+	return buildPE(wide, base, []testPESection{
+		{name: ".text", data: text, flags: pe.IMAGE_SCN_MEM_EXECUTE},
+		{name: ".rdata", data: []byte(rdata)},
+		{name: ".data", data: data},
+		{name: ".reloc", data: reloc},
+	}, map[int][2]uint32{pe.IMAGE_DIRECTORY_ENTRY_BASERELOC: {peRVA(3), uint32(len(reloc))}})
+}
+
+func TestPEGlue(t *testing.T) {
+	tests := []struct {
+		name  string
+		rdata string
+		refs  []uint32
+		want  []string
+	}{
+		{"1.0f", "\x00\x00\x80?CDOTA_Modifier_VoidSpirit_AstralStep_Caster\x00", []uint32{4}, []string{"CDOTA_Modifier_VoidSpirit_AstralStep_Caster"}},
+		{"2.0f after NUL", "\x00\x00\x80>\x00\x00\x00@CDOTA_Modifier_MonkeyKing_FurArmy_SoldierInPosition\x00", []uint32{8}, []string{"CDOTA_Modifier_MonkeyKing_FurArmy_SoldierInPosition"}},
+		{"2048.0f", "\x00\x00\x00EDOTAHidePasswordToggled\x00", []uint32{4}, []string{"DOTAHidePasswordToggled"}},
+		{"two bytes", "\x00\x00>@DOTAOpenNewsPopupURL\x00", []uint32{4}, []string{"DOTAOpenNewsPopupURL"}},
+		{"carriage return", "\x00\x00\xaa\rCDOTA_Modifier_PushWave\x00", []uint32{4}, []string{"CDOTA_Modifier_PushWave"}},
+		{"identifier byte", "\x00\x00\x16CDOTATooltipHeroAttribute\x00", []uint32{4}, []string{"DOTATooltipHeroAttribute"}},
+		{"not referenced", "\x00\x00\x80?Unreferenced_Name\x00", nil, []string{"?Unreferenced_Name"}},
+		{"start referenced", "\x00Bopomofo\x00", []uint32{1, 4}, []string{"Bopomofo"}},
+		{"later offset referenced", "\x00\x00\x80?Name_With_Inner_Ref\x00", []uint32{8}, []string{"?Name_With_Inner_Ref"}},
+		{"aligned start", "\x00\x00\x00\x00?Aligned_Name\x00", []uint32{8}, []string{"?Aligned_Name"}},
+		{"packed table", "\x00\x00\x00\x00\x00Bopomofo\x00Georgian\x00", nil, []string{"Bopomofo", "Georgian"}},
+		{"length prefix", "\x00\x00\x92\x03\x10dota_overworld.h\x00", nil, []string{"dota_overworld.h"}},
+	}
+
+	modes := []struct {
+		name      string
+		wide, lea bool
+	}{
+		{"lea", true, true},
+		{"DIR64", true, false},
+		{"HIGHLOW", false, false},
+	}
+
+	for _, test := range tests {
+		for _, mode := range modes {
+			img := gluePE(mode.wide, mode.lea, test.rdata, test.refs)
+
+			if _, lines, _ := parseAndDump(t, img, peOptions(true)); !reflect.DeepEqual(lines, test.want) {
+				t.Errorf("%s (%s): lines = %q, want %q", test.name, mode.name, lines, test.want)
+			}
+		}
+	}
+}
+
+func TestGlueRewritesKeepImports(t *testing.T) {
+	refs := map[uint32]struct{}{0x1004: {}}
+	got := glueRewrites([]byte("\x00\x00\x80?Name\x00"), 0x1000, refs, map[int]int{3: 5})
+
+	if want := map[int]int{3: 5}; !reflect.DeepEqual(got, want) {
+		t.Errorf("glueRewrites = %v, want %v", got, want)
+	}
+}
+
+// unwindPE builds an image whose .rdata holds a string, two unwind infos with
+// handler data between them, and another string. The exception directory
+// lists both unwind infos; a RIP-relative lea in .text refers to rdata offset
+// ref when it is not zero.
+func unwindPE(wide bool, ref uint32) []byte {
+	le := binary.LittleEndian
+	rdataRVA := peRVA(1)
+
+	rdata := make([]byte, 0x60)
+	copy(rdata[0x00:], "real string here\x00")
+	copy(rdata[0x20:], "\x19\x0b\x02\x00P08@JAB\x00")
+	copy(rdata[0x2c:], "xyz!QRS\x00")
+	copy(rdata[0x34:], "\x01\x00\x02\x00p08@")
+	copy(rdata[0x40:], "another real string\x00")
+
+	var pdata []byte
+	for _, off := range []uint32{0x20, 0x34} {
+		pdata = le.AppendUint32(pdata, 0)
+		pdata = le.AppendUint32(pdata, 0)
+		pdata = le.AppendUint32(pdata, rdataRVA+off)
+	}
+
+	var text []byte
+	if ref != 0 {
+		text = appendLea(text, peRVA(0), rdataRVA+ref)
+	}
+
+	text = append(text, 0xC3)
+
+	return buildPE(wide, 0x140000000, []testPESection{
+		{name: ".text", data: text, flags: pe.IMAGE_SCN_MEM_EXECUTE},
+		{name: ".rdata", data: rdata},
+		{name: ".pdata", data: pdata},
+	}, map[int][2]uint32{pe.IMAGE_DIRECTORY_ENTRY_EXCEPTION: {peRVA(2), uint32(len(pdata))}})
+}
+
+func TestPEUnwindData(t *testing.T) {
+	tests := []struct {
+		name string
+		wide bool
+		ref  uint32
+		want []string
+	}{
+		{"whole span", true, 0, []string{"real string here", "another real string"}},
+		{"reference into the span", true, 0x2c, []string{"real string here", "xyz!QRS", "another real string"}},
+		{"not x86-64", false, 0, []string{"real string here", "P08@JAB", "xyz!QRS", "p08@", "another real string"}},
+	}
+
+	for _, test := range tests {
+		img := unwindPE(test.wide, test.ref)
+
+		if _, lines, _ := parseAndDump(t, img, peOptions(true)); !reflect.DeepEqual(lines, test.want) {
+			t.Errorf("%s: lines = %q, want %q", test.name, lines, test.want)
+		}
+	}
+}
+
+func TestUnwindBlanks(t *testing.T) {
+	infos := map[uint32]uint32{0x100: 0x110, 0x120: 0x130}
+
+	if got, want := unwindBlanks(infos, nil), []peRange{{0x100, 0x130}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("filled span = %x, want %x", got, want)
+	}
+
+	// Unwind infos that fill less than half of their span are blanked one by
+	// one.
+	infos[0x200] = 0x210
+
+	got := unwindBlanks(infos, nil)
+	slices.SortFunc(got, func(a, b peRange) int { return int(a.start) - int(b.start) })
+
+	if want := []peRange{{0x100, 0x110}, {0x120, 0x130}, {0x200, 0x210}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("sparse span = %x, want %x", got, want)
+	}
+
+	if got := unwindBlanks(nil, nil); got != nil {
+		t.Errorf("no unwind infos = %x", got)
+	}
+}
+
+func TestBlankRanges(t *testing.T) {
+	data := []byte("abcdefgh")
+	got := blankRanges(data, 0x1000, []peRange{{0xff0, 0x1002}, {0x1006, 0x1100}, {0x2000, 0x2001}})
+
+	if want := []byte("\x00\x00cdef\x00\x00"); !bytes.Equal(got, want) || string(data) != "abcdefgh" {
+		t.Errorf("blankRanges = %q, data %q", got, data)
+	}
+
+	if got := blankRanges(data, 0x1000, []peRange{{0x2000, 0x2001}}); &got[0] != &data[0] {
+		t.Error("data copied without a range inside it")
+	}
+}
+
+func TestRelocTargetsGarbage(t *testing.T) {
+	r := flatImage(0x100)
+	refs := map[uint32]struct{}{}
+
+	// A block shorter than its header, a block longer than the directory and
+	// a directory past the image add nothing.
+	binary.LittleEndian.PutUint32(r.data[0x04:], 4)
+	r.relocTargets(0, 0x10, 0, refs)
+	binary.LittleEndian.PutUint32(r.data[0x04:], 0x20)
+	r.relocTargets(0, 0x10, 0, refs)
+	r.relocTargets(0xfffffff8, 0x10, 0, refs)
+
+	if len(refs) != 0 {
+		t.Errorf("refs = %x", slices.Sorted(maps.Keys(refs)))
 	}
 }
 

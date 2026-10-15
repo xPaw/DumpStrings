@@ -64,9 +64,11 @@ Run `DumpStrings <command> -h` for the flags of a command.
 
 Output is one string per line with `\t`, `\v`, `\n`, `\r` and `\f` escaped. Without `-sort`, lines come in section order; for a fat Mach-O every architecture is printed in turn, and `-sort` merges them.
 
-Two filters remove noise that plain `strings` would print, the first of them opt-in:
+These filters remove noise that plain `strings` would print, the first of them opt-in:
 
 - **Protobuf masking** (`-mask-protobufs`, off by default): serialized `FileDescriptorProto` blobs (they start with a `*.proto` file name) are blanked before extraction. Without the flag they are read as ordinary data.
+- **Unwind data** (x86-64 PE): the exception unwind data that the exception directory lists is blanked, since its bytes form short lines that change with every build. The whole span from the first unwind info to the end of the last is blanked when nothing refers into it and unwind infos fill at least half of it, which also covers the handler data between them; otherwise only the unwind infos are.
+- **Constant prefixes** (PE): compilers align string literals to 4 bytes, so the printable high bytes of a constant stored just before a string glue onto it (`?CDOTA_Name` for `00 00 80 3F` + `CDOTA_Name`). When a run starts off 4-byte alignment, nothing refers to its start, and a base relocation or a RIP-relative `lea` refers to the next 4-byte aligned offset inside it, the run starts there.
 - **End-of-string rule**: in data sections (PE `.data`/`.rdata`, and `.text` when a non-.NET PE has no `.rdata`; ELF `.rodata`/`.data`; Mach-O `__const`/`__data`) a run is kept only if a NUL byte follows it, it ends the section, or it sits inside text. This drops fragments of binary data that look like text. `auto` turns the rule off for Go and Rust binaries, whose strings are not NUL-terminated (a note is printed on stderr); use `-terminated=off` to disable it everywhere or `on` to force it.
 
 Exit codes: `0` success, `1` the file is unreadable, unsupported, fails to parse or has no readable sections (`-print-sections` still lists the sections of such a file and exits `0`), `2` usage error (usage is printed on stderr). Problems with a single section, such as truncation, are warnings on stderr and the readable bytes are still dumped. `-h` prints usage and exits `0`.
