@@ -91,8 +91,8 @@ func buildVersion() string {
 	return revision
 }
 
-// newFlagSet returns the flag set of a subcommand, which prints the usage line
-// and then the flag defaults to stderr.
+// newFlagSet returns the flag set of a subcommand. Its usage function prints
+// the usage line and then the flag defaults to stderr.
 func newFlagSet(name, usage string, stderr io.Writer) *flag.FlagSet {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -104,8 +104,8 @@ func newFlagSet(name, usage string, stderr io.Writer) *flag.FlagSet {
 	return flags
 }
 
-// parseFlags parses the flags of a subcommand. When parsing ends the command
-// it returns false and the exit code: 0 for -h, 2 for a bad flag.
+// parseFlags parses the flags of a subcommand. If parsing ends the command, it
+// returns false and the exit code: 0 for -h, 2 for a bad flag.
 func parseFlags(flags *flag.FlagSet, args []string) (int, bool) {
 	err := flags.Parse(args)
 
@@ -137,7 +137,7 @@ func runDump(args []string, stdout, stderr io.Writer) int {
 	flags.StringVar(&cfg.format, "format", "auto", "binary format: auto, pe, elf or macho")
 	flags.BoolVar(&opts.Demangle, "demangle", true, "demangle C++ symbols into their original source identifiers")
 	flags.IntVar(&opts.MinLength, "min-length", 4, "minimum length of a string")
-	flags.IntVar(&opts.SymLength, "sym-length", 10, "maximum length of a string to filter out when the string contains majority of non a-Z characters")
+	flags.IntVar(&opts.SymLength, "sym-length", 10, "maximum length of a string that is dropped when most of its characters are not a-Z")
 	flags.BoolVar(&cfg.printSections, "print-sections", false, "print every section with its type, flags, address, size and how it is read")
 	flags.BoolVar(&opts.MaskProtobufs, "mask-protobufs", false, "blank serialized protobuf descriptors (.proto file descriptors embedded by protoc) before extracting strings")
 	flags.StringVar(&cfg.terminated, "terminated", "auto", "keep only data section strings that end in a NUL byte or lie in text: auto (off for Go and Rust binaries), on or off")
@@ -157,17 +157,17 @@ func runDump(args []string, stdout, stderr io.Writer) int {
 	switch cfg.format {
 	case "auto", "pe", "elf", "macho":
 	default:
-		return usageError("invalid -format value %q: want auto, pe, elf or macho\n", cfg.format)
+		return usageError("invalid -format value %q: must be auto, pe, elf or macho\n", cfg.format)
 	}
 
 	switch cfg.terminated {
 	case "auto", "on", "off":
 	default:
-		return usageError("invalid -terminated value %q: want auto, on or off\n", cfg.terminated)
+		return usageError("invalid -terminated value %q: must be auto, on or off\n", cfg.terminated)
 	}
 
 	if flags.NArg() != 1 {
-		return usageError("dump takes exactly one binary, got %d arguments\n", flags.NArg())
+		return usageError("dump takes exactly one binary but got %d arguments\n", flags.NArg())
 	}
 
 	path := flags.Arg(0)
@@ -186,8 +186,8 @@ func runDump(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// run dumps one file to out, sorted and deduplicated when cfg.sorted is set. A
-// panic while parsing or dumping is returned as an error.
+// run dumps one file to out. When cfg.sorted is set, it sorts the lines and
+// removes duplicates. It returns a panic while parsing or dumping as an error.
 func run(path string, opts Options, cfg dumpConfig, out *bufio.Writer, stderr io.Writer) (err error) {
 	defer func() {
 		if r := recover(); r != nil {

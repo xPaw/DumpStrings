@@ -49,7 +49,7 @@ func TestRvaToOffset(t *testing.T) {
 	}
 }
 
-// flatImage lays one section out so that RVA r is file offset r.
+// flatImage maps one section so that RVA r is file offset r.
 func flatImage(n int) *peReader {
 	return &peReader{
 		data: make([]byte, n),
@@ -81,8 +81,8 @@ func TestImportDirectories(t *testing.T) {
 
 		const base = 0x10000000
 
-		// Import descriptor 1 uses its original thunks, descriptor 2 has none and
-		// falls back to the first thunks.
+		// Import descriptor 1 uses its original thunks. Descriptor 2 has none,
+		// so it uses the first thunks.
 		put32(0x100, 0x400)
 		put32(0x100+16, 0x500)
 		put32(0x114+16, 0x600)
@@ -179,7 +179,7 @@ type testPESection struct {
 	name string
 	data []byte
 
-	// vsize is the VirtualSize; zero means len(data).
+	// vsize is the VirtualSize. Zero means len(data).
 	vsize uint32
 
 	flags uint32
@@ -189,7 +189,7 @@ type testPESection struct {
 func peRVA(i int) uint32 { return 0x1000 * uint32(i+1) }
 
 // buildPE assembles a minimal PE32 or PE32+ image. Section i is mapped at
-// peRVA(i); a section with no data has SizeOfRawData zero. dirs maps a data
+// peRVA(i). A section with no data has SizeOfRawData zero. dirs maps a data
 // directory index to its RVA and size.
 func buildPE(wide bool, base uint64, secs []testPESection, dirs map[int][2]uint32) []byte {
 	le := binary.LittleEndian
@@ -250,9 +250,10 @@ func buildPE(wide bool, base uint64, secs []testPESection, dirs map[int][2]uint3
 	return append(hdr, body...)
 }
 
-// peImportData returns a 0x100 byte section mapped at rva that holds an import
-// descriptor at 0x00, a delay-import descriptor at 0x30 and the hint/name
-// entries "Hi" + "ImportedFunc" at 0xc0 and "Dl" + "DelayedFunc" at 0xe0.
+// peImportData returns a section of 0x100 bytes mapped at rva. The section
+// holds an import descriptor at 0x00 and a delay-import descriptor at 0x30. It
+// also holds the hint/name entries "Hi" + "ImportedFunc" at 0xc0 and "Dl" +
+// "DelayedFunc" at 0xe0.
 // With delayVA the delay descriptor uses virtual addresses instead of RVAs.
 func peImportData(wide bool, base uint64, rva uint32, delayVA bool) []byte {
 	le := binary.LittleEndian
@@ -616,7 +617,7 @@ func TestPEImportDescriptorsStopAtWrap(t *testing.T) {
 	put32 := func(r *peReader, off int, v uint32) { binary.LittleEndian.PutUint32(r.data[off:], v) }
 
 	// Two non-empty import descriptors without a name table end exactly at
-	// the top; a third at RVA 0 names a hint at 0x80.
+	// the top. A third at RVA 0 names a hint at 0x80.
 	r := newReader()
 	put32(r, 0x1d8+4, 1)
 	put32(r, 0x1ec+4, 1)
@@ -735,9 +736,9 @@ func appendLea(text []byte, addr, target uint32) []byte {
 	return binary.LittleEndian.AppendUint32(text, target-next)
 }
 
-// gluePE builds an image whose .rdata holds rdata. The offsets in refs are
-// referred to by RIP-relative lea instructions in .text when lea is set, and
-// by relocated pointers in .data otherwise.
+// gluePE builds an image whose .rdata holds rdata. When lea is set,
+// RIP-relative lea instructions in .text refer to the offsets in refs.
+// Otherwise, relocated pointers in .data refer to them.
 func gluePE(wide, lea bool, rdata string, refs []uint32) []byte {
 	le := binary.LittleEndian
 	textRVA, rdataRVA, dataRVA := peRVA(0), peRVA(1), peRVA(2)
@@ -835,8 +836,8 @@ func TestGlueRewritesKeepImports(t *testing.T) {
 
 // unwindPE builds an image whose .rdata holds a string, two unwind infos with
 // handler data between them, and another string. The exception directory
-// lists both unwind infos; a RIP-relative lea in .text refers to rdata offset
-// ref when it is not zero.
+// lists both unwind infos. A RIP-relative lea in .text refers to rdata offset
+// ref when ref is not zero.
 func unwindPE(wide bool, ref uint32) []byte {
 	le := binary.LittleEndian
 	rdataRVA := peRVA(1)
@@ -991,8 +992,8 @@ func TestDelayImportsSkipUnusableDescriptors(t *testing.T) {
 	r := flatImage(0x1000)
 	put32 := func(off int, v uint32) { binary.LittleEndian.PutUint32(r.data[off:], v) }
 
-	// Descriptor 1 has no name table, descriptor 2 holds a virtual address
-	// below the image base, descriptor 3 is usable.
+	// Descriptor 1 has no name table. Descriptor 2 holds a virtual address
+	// below the image base. Descriptor 3 is usable.
 	put32(0x100, 1)
 	put32(0x120+16, 0x100)
 	put32(0x140, 1)

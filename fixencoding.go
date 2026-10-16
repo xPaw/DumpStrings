@@ -16,7 +16,7 @@ import (
 
 // detectBOMEncoding identifies UTF-16/UTF-32 content by its byte order mark.
 // UTF-32 is checked first because its little endian mark starts with the
-// UTF-16LE one. Anything else (including UTF-8 with or without BOM) returns nil.
+// UTF-16LE one. Any other content (including UTF-8 with or without BOM) gives nil.
 func detectBOMEncoding(head []byte) (encoding.Encoding, string) {
 	switch {
 	case bytes.HasPrefix(head, []byte{0x00, 0x00, 0xFE, 0xFF}):
@@ -33,8 +33,8 @@ func detectBOMEncoding(head []byte) (encoding.Encoding, string) {
 }
 
 // readBOMFile reads a file that starts with a UTF-16 or UTF-32 byte order
-// mark, and returns its bytes, encoding and permissions. Only the first bytes
-// of any other file are read, and its encoding is nil.
+// mark, and returns its bytes, encoding and permissions. For any other file,
+// readBOMFile reads only the first bytes, and the encoding it returns is nil.
 func readBOMFile(path string) ([]byte, encoding.Encoding, string, fs.FileMode, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -68,8 +68,8 @@ func readBOMFile(path string) ([]byte, encoding.Encoding, string, fs.FileMode, e
 }
 
 // fixFileEncoding rewrites a UTF-16/UTF-32 file as trimmed UTF-8 with a single
-// trailing newline. It returns the detected encoding name, or "" if the file
-// was left untouched.
+// trailing newline. It returns the detected encoding name, or "" if it did not
+// change the file.
 func fixFileEncoding(path string) (string, error) {
 	data, enc, name, perm, err := readBOMFile(path)
 	if enc == nil || err != nil {

@@ -2,7 +2,7 @@
 
 The better `strings` utility for reverse engineers.
 
-`DumpStrings` programmatically extracts strings from Mach-O (macOS), ELF (Linux), and PE (Windows) binary formats by parsing their string-containing sections. Unlike the traditional UNIX `strings` utility that scans the entire file, DumpStrings intelligently targets specific sections known to contain string data, providing more relevant results for binary analysis.
+`DumpStrings` programmatically extracts strings from Mach-O (macOS), ELF (Linux), and PE (Windows) binary formats. It parses their string-containing sections. The traditional UNIX `strings` utility scans the entire file. DumpStrings targets specific sections known to contain string data. This gives more relevant results for binary analysis.
 
 ## Features
 
@@ -62,17 +62,20 @@ Run `DumpStrings <command> -h` for the flags of a command.
 | `-sort` | `false` | Print byte-order sorted unique lines instead of section order |
 | `-print-sections` | `false` | Print every section with its type, address, size and how it is read, then exit |
 
-Output is one string per line with `\t`, `\v`, `\n`, `\r` and `\f` escaped. Without `-sort`, lines come in section order; for a fat Mach-O every architecture is printed in turn, and `-sort` merges them.
+Output is one string per line with `\t`, `\v`, `\n`, `\r` and `\f` escaped. Without `-sort`, lines come in section order. For a fat Mach-O, DumpStrings prints every architecture in turn, and `-sort` merges them.
 
 These filters remove noise that plain `strings` would print, the first of them opt-in:
 
 - **Protobuf masking** (`-mask-protobufs`, off by default): serialized `FileDescriptorProto` blobs (they start with a `*.proto` file name) are blanked before extraction. Without the flag they are read as ordinary data.
-- **Unwind data** (x86-64 PE): the exception unwind data that the exception directory lists is blanked, since its bytes form short lines that change with every build. The whole span from the first unwind info to the end of the last is blanked when nothing refers into it and unwind infos fill at least half of it, which also covers the handler data between them; otherwise only the unwind infos are.
-- **Relocated pointers** (PE): the addresses that base relocations patch are blanked. Their bytes are never text, but in 64-bit executables, which load at `0x140000000`, the low bytes of a pointer can form lines like `036@` that change with every build. Their NUL bytes are kept and the others become a byte that is neither NUL nor text, so a constant stored just before a pointer does not gain a terminator.
-- **Constant prefixes** (PE): compilers align string literals to 4 bytes, so the printable high bytes of a constant stored just before a string glue onto it (`?CDOTA_Name` for `00 00 80 3F` + `CDOTA_Name`). When a run starts off 4-byte alignment, nothing refers to its start, and a base relocation or a RIP-relative `lea` refers to the next 4-byte aligned offset inside it, the run starts there.
-- **End-of-string rule**: in data sections (PE `.data`/`.rdata`, and `.text` when a non-.NET PE has no `.rdata`; ELF `.rodata`/`.data`; Mach-O `__const`/`__data`) a run is kept only if a NUL byte follows it, it ends the section, or it sits inside text. This drops fragments of binary data that look like text. `auto` turns the rule off for Go and Rust binaries, whose strings are not NUL-terminated (a note is printed on stderr); use `-terminated=off` to disable it everywhere or `on` to force it.
+- **Unwind data** (x86-64 PE): the exception unwind data that the exception directory lists is blanked. This is because its bytes form short lines that change with every build. The whole span from the first unwind info to the end of the last is blanked when nothing refers into it and unwind infos fill at least half of it. This also blanks the handler data between the unwind infos. Otherwise only the unwind infos are blanked.
+- **Relocated pointers** (PE): the addresses that base relocations patch are blanked. These bytes are never text. But 64-bit executables load at `0x140000000`, so the low bytes of a pointer can form lines like `036@` that change with every build. The NUL bytes of a pointer stay. Each other byte becomes a byte that is neither NUL nor text, so a constant just before a pointer does not get a terminator.
+- **Constant prefixes** (PE): compilers align string literals to 4 bytes. So the printable high bytes of a constant stored just before a string glue onto it (`?CDOTA_Name` for `00 00 80 3F` + `CDOTA_Name`). A run starts at the next 4-byte aligned offset inside it when all of these conditions hold:
+  - The run starts off 4-byte alignment.
+  - Nothing refers to its start.
+  - A base relocation or a RIP-relative `lea` refers to that offset.
+- **End-of-string rule**: in data sections, a run is kept only if a NUL byte follows it, it ends the section or it sits inside text. The data sections are PE `.data`/`.rdata`, PE `.text` when a non-.NET PE has no `.rdata`, ELF `.rodata`/`.data` and Mach-O `__const`/`__data`. This drops fragments of binary data that look like text. `auto` turns the rule off for Go and Rust binaries, whose strings are not NUL-terminated. It prints a note on stderr. Use `-terminated=off` to disable the rule everywhere. Use `on` to force it.
 
-Exit codes: `0` success, `1` the file is unreadable, unsupported, fails to parse or has no readable sections (`-print-sections` still lists the sections of such a file and exits `0`), `2` usage error (usage is printed on stderr). Problems with a single section, such as truncation, are warnings on stderr and the readable bytes are still dumped. `-h` prints usage and exits `0`.
+Exit codes: `0` success, `1` the file is unreadable, unsupported, fails to parse or has no readable sections, `2` usage error. `-print-sections` still lists the sections of such a file and exits `0`. A usage error prints the usage on stderr. Problems with a single section, such as truncation, are warnings on stderr. DumpStrings still dumps the readable bytes. `-h` prints usage and exits `0`.
 
 ### dedupe
 
@@ -95,21 +98,21 @@ target game/bin/win64/assetbrowser_strings.txt
 ./DumpStrings dedupe -root path/to/repo path/to/repo/strings_dedupe.conf
 ```
 
-- `ref` lines name files whose lines are removed from the targets; they are never modified. `target *` means every `*_strings.txt` under the root (skipping `.git` and `node_modules`); `ref` lines must come before `target` lines, and `target *` cannot be mixed with explicit targets. Paths are relative to `-root`, use `/` and may not contain `..`.
-- A missing `ref` prints `::warning::Dedupe file not found: <path>` and is skipped; a missing explicit target is skipped silently.
-- Only changed files are rewritten, in byte-order sorted order. The set of all lines is checked to be unchanged before anything is written.
+- `ref` lines name files whose lines are removed from the targets. DumpStrings never modifies these files. `target *` means every `*_strings.txt` under the root (skipping `.git` and `node_modules`). `ref` lines must come before `target` lines. You cannot mix `target *` with explicit targets. Paths are relative to `-root`, use `/` and may not contain `..`.
+- A missing `ref` prints `::warning::Dedupe file not found: <path>`, and DumpStrings skips it. DumpStrings skips a missing explicit target silently.
+- DumpStrings rewrites only changed files, in byte-order sorted order. Before it writes anything, it checks that the set of all lines is unchanged.
 - `-dry-run` reports what would change without writing.
 - Exit codes: `0` success, `1` unreadable or invalid config, `2` usage error, `3` the self-check failed (nothing written).
 
 ### fix-encoding
 
-Converts UTF-16 and UTF-32 text files (detected by BOM) to UTF-8, trims surrounding whitespace and ends the file with a single newline. Files that need no change are left alone.
+Converts UTF-16 and UTF-32 text files (detected by BOM) to UTF-8, trims surrounding whitespace and ends the file with a single newline. It leaves files that need no change alone.
 
 ```bash
 ./DumpStrings fix-encoding -ext txt,xml,cfg path/to/dir other.txt
 ```
 
-Directories are walked recursively (skipping `.git` and `node_modules`) and files are picked by `-ext` (default `txt`, case-sensitive); files named directly are always processed. Problems with a single file are warnings on stderr. Exit codes: `0` success, `1` an argument path does not exist, `2` usage error.
+DumpStrings walks directories recursively (skipping `.git` and `node_modules`) and picks files by `-ext` (default `txt`, case-sensitive). It always processes files named directly. Problems with a single file are warnings on stderr. Exit codes: `0` success, `1` an argument path does not exist, `2` usage error.
 
 ### version
 

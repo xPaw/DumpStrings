@@ -46,9 +46,10 @@ func textRune(d []byte) int {
 	return n
 }
 
-// isText reports whether seg reads as a string: valid UTF-8 without control
-// characters other than textControl and without C1 code points (U+0080 to
-// U+009F), or at least three quarters printable ASCII bytes.
+// isText reports whether seg reads as a string. It does when seg is valid
+// UTF-8 without control characters other than textControl and without C1 code
+// points (U+0080 to U+009F). It also does when at least three quarters of the
+// bytes are printable ASCII.
 func isText(seg []byte) bool {
 	strict := true
 	printable := 0
@@ -74,9 +75,9 @@ func isText(seg []byte) bool {
 }
 
 // endRule decides whether the runs of a data section end a string. Runs must
-// be passed in order, which lets it track the NUL bytes around them in one
-// pass over the section and reuse the verdict of a segment shared by several
-// runs.
+// be passed in order. This lets it track the NUL bytes around them in one pass
+// over the section. It can also reuse the verdict of a segment that several
+// runs share.
 type endRule struct {
 	data []byte
 
@@ -101,8 +102,9 @@ func newEndRule(data []byte) endRule {
 	return endRule{data: data, prevNul: -1, nextNul: -1, start: -1, nextBad: -1}
 }
 
-// keeps reports whether the run data[s:e] is kept: it is followed by a NUL
-// byte or the end of the section, or the text around it reads as a string.
+// keeps reports whether the run data[s:e] is kept. A run is kept when a NUL
+// byte or the end of the section follows it. It is also kept when the text
+// around it reads as a string.
 func (r *endRule) keeps(s, e int) bool {
 	d := r.data
 
@@ -123,10 +125,11 @@ func (r *endRule) keeps(s, e int) bool {
 }
 
 // textAround reports whether the text around the run data[s:e] reads as a
-// string. When the NUL bytes that delimit it, or the section start and end,
-// lie within textWindow bytes of the run, the segment between them must pass
-// isText. Otherwise the window of textWindow bytes on each side, cut short at
-// a delimiting NUL byte, must be valid UTF-8 text.
+// string. The delimiters are the NUL bytes around the run, or the section
+// start and end. When they lie within textWindow bytes of the run, the segment
+// between them must pass isText. Otherwise, the window of textWindow bytes on
+// each side must be valid UTF-8 text. A delimiting NUL byte cuts the window
+// short.
 func (r *endRule) textAround(s, e int) bool {
 	d := r.data
 	whole := true
@@ -166,8 +169,8 @@ func (r *endRule) textAround(s, e int) bool {
 }
 
 // firstNonText returns the offset of the first byte at or after i that is not
-// valid UTF-8 text as isText defines it, or len(d). Up to three continuation
-// bytes at i are skipped, since i may fall inside a multibyte character.
+// valid UTF-8 text as isText defines it, or len(d). It skips up to three
+// continuation bytes at i, since i may fall inside a multibyte character.
 func firstNonText(d []byte, i int) int {
 	for k := 0; k < 3 && i < len(d) && d[i]&0xC0 == 0x80; k++ {
 		i++
@@ -198,9 +201,9 @@ var toolchains = []struct {
 var goBuildInfoMagic = []byte("\xff Go buildinf:")
 
 // hasGoBuildInfo reports whether data holds Go build info: the magic at a
-// 16-byte aligned offset followed by a pointer size of 4 or 8. Unaligned or
-// malformed copies of the magic string, as C programs and the Go linker carry
-// as literals, do not count.
+// 16-byte aligned offset followed by a pointer size of 4 or 8. C programs and
+// the Go linker carry unaligned or malformed copies of the magic string as
+// literals. These copies do not count.
 func hasGoBuildInfo(data []byte) bool {
 	for off := 0; off+15 <= len(data); off += 16 {
 		if data[off] == 0xFF && bytes.HasPrefix(data[off:], goBuildInfoMagic) && (data[off+14] == 4 || data[off+14] == 8) {
@@ -212,8 +215,8 @@ func hasGoBuildInfo(data []byte) bool {
 }
 
 // ResolveTerminated returns whether the end-of-string rule applies to a file
-// for the given -terminated mode, and for "auto" the toolchain that turned it
-// off, if any.
+// for the given -terminated mode. For "auto", it also returns the toolchain
+// that turned the rule off, if any.
 func ResolveTerminated(mode string, data []byte) (bool, string) {
 	switch mode {
 	case "on":

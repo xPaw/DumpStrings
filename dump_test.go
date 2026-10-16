@@ -16,8 +16,8 @@ func testDumper(opts Options, lines *[]string) *Dumper {
 	return &Dumper{opts: opts, sink: func(l string) { *lines = append(*lines, l) }}
 }
 
-// parseAndDump parses data, detecting its format, and dumps it with opts,
-// returning the binary, the lines and the warnings.
+// parseAndDump parses data, detects its format and dumps it with opts. It
+// returns the binary, the lines and the warnings.
 func parseAndDump(t *testing.T, data []byte, opts Options) (*Binary, []string, []string) {
 	t.Helper()
 
@@ -112,8 +112,8 @@ func TestFileSlice(t *testing.T) {
 	}
 }
 
-// note encodes one ELF note record with the given alignment, padding so the
-// name, descriptor and next record start at aligned offsets.
+// note encodes one ELF note record with the given alignment. It adds padding so
+// the name, descriptor and next record start at aligned offsets.
 func note(name, desc string, align int) []byte {
 	var buf bytes.Buffer
 	pad := func() {

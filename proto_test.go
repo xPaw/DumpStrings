@@ -126,7 +126,8 @@ func TestMaskProtobufsGroup(t *testing.T) {
 		t.Fatalf("group blob not masked: %q", got)
 	}
 
-	// Mismatched end-group stops before the group; byte there is not NUL.
+	// A mismatched end-group stops the walk before the group, and the byte there
+	// is not NUL.
 	bad := append(pbField(0x0a, []byte("g.proto")), 0x2b, 0x30, 0x01, 0x34, 0)
 	if got := mask(t, bad); !bytes.Equal(got, bad) {
 		t.Fatalf("masked mismatched group: %q", got)

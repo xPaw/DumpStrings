@@ -43,7 +43,7 @@ func readTree(t *testing.T, root, name string) string {
 	return string(data)
 }
 
-// symlink creates a symbolic link at link pointing to target, skipping the
+// symlink creates a symbolic link at link that points to target. It skips the
 // test when the system does not allow it.
 func symlink(t *testing.T, target, link string) {
 	t.Helper()

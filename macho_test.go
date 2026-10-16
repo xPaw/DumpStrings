@@ -163,7 +163,7 @@ func TestMachOThin(t *testing.T) {
 		t.Errorf("warnings %q, readable %v, %d sections", warnings, b.Readable, len(b.Sections))
 	}
 
-	// Every section is masked; only __const and __data take the end-of-string
+	// Every section is masked. Only __const and __data take the end-of-string
 	// rule.
 	for i, s := range b.Sections {
 		if wantRule := i == 1 || i == 2; !s.Mask || s.EndRule != wantRule {

@@ -74,10 +74,10 @@ func pbSkip(d []byte, p int, wire, field uint64, depth int) (int, bool) {
 	return p, false
 }
 
-// pbConsume walks the fields of one message starting at d[start], which holds
-// field 1, and returns the position where the message ends: end of data, a
-// tag that does not parse, field 0, an unknown or stray wire type, or a second
-// field 1.
+// pbConsume walks the fields of one message that starts at d[start], which
+// holds field 1. It returns the position where the message ends: the end of
+// data, a tag that does not parse, field 0, an unknown or stray wire type, or
+// a second field 1.
 func pbConsume(d []byte, start int) int {
 	p := start
 	seen1 := false
@@ -128,9 +128,10 @@ func isProtoName(name []byte) bool {
 }
 
 // MaskProtobufs returns d with every serialized FileDescriptorProto
-// zero-filled, found as field 1 (a .proto file name) followed by a well-formed
-// message that is terminated by a NUL byte or the end of d. d is not modified:
-// it is returned as is when it holds no descriptor, and copied otherwise.
+// zero-filled. A descriptor is field 1 (a .proto file name) followed by a
+// well-formed message that a NUL byte or the end of d terminates.
+// MaskProtobufs does not modify d. It returns d as is when d holds no
+// descriptor, and returns a copy otherwise.
 func MaskProtobufs(d []byte) []byte {
 	var masked []byte
 

@@ -101,8 +101,8 @@ func addMachOLoadStrings(b *Binary, f *macho.File, prefix string) {
 	}, Section{Data: data, Mask: true}, true)
 }
 
-// parseMachO selects a fixed set of sections and the symbol string table of a
-// thin file, or of every arch of a fat file in turn.
+// parseMachO selects a fixed set of sections and the symbol string table. It
+// reads a thin file, or every arch of a fat file in turn.
 func parseMachO(data []byte, warn Warner) (*Binary, error) {
 	b := &Binary{}
 
@@ -158,8 +158,8 @@ func addMachO(b *Binary, f *macho.File, data []byte, prefix string, warn Warner)
 
 	addMachOLoadStrings(b, f, prefix)
 
-	// debug/macho leaves Symtab.SymtabCmd empty, so the command is decoded
-	// from its raw bytes.
+	// debug/macho leaves Symtab.SymtabCmd empty, so this code decodes the
+	// command from its raw bytes.
 	var cmd macho.SymtabCmd
 	if f.Symtab == nil || binary.Read(bytes.NewReader(f.Symtab.LoadBytes), f.ByteOrder, &cmd) != nil || cmd.Strsize == 0 {
 		return

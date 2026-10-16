@@ -19,11 +19,11 @@ func sortedUnique(lines []string) []string {
 }
 
 // walkFiles calls fn with the path of every regular file under root whose name
-// match accepts. Directories named .git or node_modules below root are skipped
-// and symbolic links below root are not followed; a root that is a symbolic
-// link is walked through, with paths still reported under root. A walk error
-// goes to onErr: when onErr returns an error the walk stops with it, otherwise
-// the entry is skipped.
+// match accepts. It skips directories named .git or node_modules below root.
+// It does not follow symbolic links below root. It walks through a root that is
+// a symbolic link, and still reports paths under root. A walk error goes to
+// onErr. If onErr returns an error, the walk stops with it. Otherwise the walk
+// skips the entry.
 func walkFiles(root string, match func(name string) bool, fn func(path string) error, onErr func(error) error) error {
 	walkRoot := root
 
@@ -69,9 +69,9 @@ func walkFiles(root string, match func(name string) bool, fn func(path string) e
 	})
 }
 
-// replaceFile writes data next to path and renames it over the original so a
-// failed write never leaves a truncated file. When path is a symbolic link,
-// the file it resolves to is replaced and the link is kept.
+// replaceFile writes data next to path and renames it over the original. This
+// way a failed write never leaves a truncated file. When path is a symbolic
+// link, it replaces the file that the link resolves to and keeps the link.
 func replaceFile(path string, data []byte, perm fs.FileMode) error {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
@@ -113,14 +113,14 @@ var escapeReplacer = strings.NewReplacer(
 	"\f", "\\f",
 )
 
-// maxDemangledLengthPow caps demangled output at 1<<16 bytes, which stops
+// maxDemangledLengthPow caps demangled output at 1<<16 bytes. This stops
 // substitution chains from expanding exponentially.
 const maxDemangledLengthPow = 16
 
-// UtilDemangle demangles an Itanium symbol, returning name unchanged when it
-// cannot be demangled. A leading '.' is kept and a leading '$' is dropped, and
-// a trailing "@VERSION", "@@VERSION" or "@plt" is split off before demangling
-// and re-appended.
+// UtilDemangle demangles an Itanium symbol. It returns name unchanged when it
+// cannot demangle it. It keeps a leading '.' and drops a leading '$'. It splits
+// off a trailing "@VERSION", "@@VERSION" or "@plt" before demangling and
+// appends it again afterwards.
 func UtilDemangle(name string) (out string) {
 	defer func() {
 		if recover() != nil {

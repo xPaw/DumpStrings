@@ -7,7 +7,7 @@ import (
 	"fmt"
 )
 
-// Limits that keep a corrupt import table from running away.
+// Limits that stop a corrupt import table from causing a long loop.
 const (
 	maxImportDescriptors = 1 << 14
 	maxImportThunks      = 1 << 20
@@ -61,9 +61,10 @@ func (r *peReader) bytes(rva uint32, n int) []byte {
 }
 
 // importNames collects the RVAs of the hint/name entries of the by-name
-// imports listed in a name table. Thunks are 8 bytes when wide, 4 otherwise;
-// ordinals are skipped. For delay imports with VA addressing, thunk values
-// are virtual addresses and base is subtracted.
+// imports listed in a name table. A thunk is 8 bytes when wide and 4 bytes
+// otherwise. importNames skips ordinals. For delay imports with VA addressing,
+// the thunk values are virtual addresses, and importNames subtracts base from
+// them.
 func (r *peReader) importNames(table uint32, wide bool, base uint64, va bool, out map[uint32]struct{}) {
 	size := uint32(4)
 	if wide {
@@ -271,9 +272,10 @@ const (
 	relocDir64   = 10
 )
 
-// relocations adds to targets the RVA that each HIGHLOW and DIR64 base
-// relocation in the size bytes of relocation blocks at rva points to, and
-// returns the RVA ranges of the addresses they patch.
+// relocations reads the size bytes of relocation blocks at rva. For each
+// HIGHLOW and DIR64 base relocation, it adds to targets the RVA that the
+// relocation points to. It returns the RVA ranges of the addresses that these
+// relocations patch.
 func (r *peReader) relocations(rva, size uint32, base uint64, targets map[uint32]struct{}) []peRange {
 	var sites []peRange
 
@@ -342,7 +344,7 @@ func (r *peReader) relocations(rva, size uint32, base uint64, targets map[uint32
 }
 
 // ripTargets adds the target of every RIP-relative lea with a 64-bit operand
-// in code, x86-64 code mapped at addr.
+// in code. The code is x86-64 code mapped at addr.
 func ripTargets(code []byte, addr uint32, out map[uint32]struct{}) {
 	for i := 0; i+7 <= len(code); i++ {
 		// Skip to the next lea opcode, which follows the REX prefix.
@@ -367,10 +369,10 @@ func ripTargets(code []byte, addr uint32, out map[uint32]struct{}) {
 	}
 }
 
-// peReferences returns the RVAs the image refers to: the targets of its base
-// relocations and, in x86-64 images, of the RIP-relative lea instructions in
-// its executable sections. It also returns the RVA ranges of the pointers that
-// the base relocations patch.
+// peReferences returns the RVAs that the image refers to. These are the
+// targets of its base relocations. In x86-64 images, they also include the
+// targets of the RIP-relative lea instructions in its executable sections. It
+// also returns the RVA ranges of the pointers that the base relocations patch.
 func peReferences(data []byte, f *pe.File, secs []peSection) (refs map[uint32]struct{}, pointers []peRange) {
 	refs = map[uint32]struct{}{}
 	dirs, base, _ := peDirectories(f)
@@ -413,10 +415,10 @@ type peRange struct {
 	start, end uint32
 }
 
-// unwindInfos maps the RVA of each unwind info that the size bytes of
-// RUNTIME_FUNCTION entries at rva lead to, to the end of its fixed part: the
-// header, the unwind codes, and the handler RVA or chained function entry
-// that follows them.
+// unwindInfos reads the size bytes of RUNTIME_FUNCTION entries at rva. It maps
+// the RVA of each unwind info that these entries lead to, to the end of the
+// fixed part of that unwind info. The fixed part is the header, the unwind
+// codes, and the handler RVA or chained function entry that follows them.
 func (r *peReader) unwindInfos(rva, size uint32) map[uint32]uint32 {
 	table := r.bytes(rva, int(size/12*12))
 	infos := map[uint32]uint32{}
@@ -469,10 +471,11 @@ func (r *peReader) unwindInfos(rva, size uint32) map[uint32]uint32 {
 	return infos
 }
 
-// unwindBlanks returns the RVA ranges of unwind data to blank: the span from
-// the first unwind info to the end of the last, which also holds the handler
-// data between them, when unwind infos fill at least half of it and nothing
-// refers into it; otherwise each unwind info.
+// unwindBlanks returns the RVA ranges of unwind data to blank. The span runs
+// from the first unwind info to the end of the last one, and it also holds the
+// handler data between them. When the unwind infos fill at least half of the
+// span and nothing refers into it, the result is the span. Otherwise, the
+// result is each unwind info.
 func unwindBlanks(infos map[uint32]uint32, refs map[uint32]struct{}) []peRange {
 	if len(infos) == 0 {
 		return nil
@@ -502,8 +505,8 @@ func unwindBlanks(infos map[uint32]uint32, refs map[uint32]struct{}) []peRange {
 	return []peRange{span}
 }
 
-// peUnwindBlanks returns the RVA ranges of the unwind data of an x86-64 image,
-// which the exception directory lists.
+// peUnwindBlanks returns the RVA ranges of the unwind data of an x86-64 image.
+// The exception directory lists this data.
 func peUnwindBlanks(data []byte, f *pe.File, secs []peSection, refs map[uint32]struct{}) []peRange {
 	dirs, _, _ := peDirectories(f)
 	if f.Machine != pe.IMAGE_FILE_MACHINE_AMD64 || len(dirs) <= pe.IMAGE_DIRECTORY_ENTRY_EXCEPTION {
@@ -516,10 +519,10 @@ func peUnwindBlanks(data []byte, f *pe.File, secs []peSection, refs map[uint32]s
 	return unwindBlanks(r.unwindInfos(d.VirtualAddress, d.Size), refs)
 }
 
-// blankRanges returns data, a section mapped at addr, with every byte other
-// than NUL in the parts of the ranges inside it replaced by fill. data is not
-// modified: it is returned as is when no range falls inside it, and copied
-// otherwise.
+// blankRanges blanks the parts of the ranges that lie inside data, a section
+// mapped at addr. It replaces every byte other than NUL there with fill. It
+// does not modify data. It returns data as is when no range falls inside it,
+// and a copy otherwise.
 func blankRanges(data []byte, addr uint32, ranges []peRange, fill byte) []byte {
 	var blanked []byte
 
@@ -552,10 +555,11 @@ func blankRanges(data []byte, addr uint32, ranges []peRange, fill byte) []byte {
 }
 
 // glueRewrites adds to m, for a section mapped at addr, the runs that start
-// off 4-byte alignment where nothing refers to the start but something refers
-// to the next 4-byte aligned offset inside the run. Compilers align string
-// literals, so the bytes before that offset are the printable tail of the
-// constant stored before the string. Offsets already in m are left alone.
+// off 4-byte alignment. A run is added only when nothing refers to its start
+// and something refers to the next 4-byte aligned offset inside it. Compilers
+// align string literals, so the bytes before that offset are the printable
+// tail of the constant stored before the string. It leaves offsets already in
+// m alone.
 func glueRewrites(data []byte, addr uint32, refs map[uint32]struct{}, m map[int]int) map[int]int {
 	for off, run := range splitRuns(data) {
 		start := addr + uint32(off)
@@ -612,11 +616,11 @@ func peSizeOfHeaders(f *pe.File) uint32 {
 
 // parsePE selects every .data and .rdata section, and every .text section as
 // the fallback. A native image without an .rdata section keeps its read-only
-// data in .text, which is then read as a data section instead. A section whose
-// raw data starts at offset 0 or inside the headers has no data of its own and
-// is skipped. The fallback is dropped when a data section runs past the end of
-// the file, since its missing bytes may hold the lines, and the binary is then
-// readable only through the data bytes that are present.
+// data in .text. parsePE then reads .text as a data section instead. A section
+// whose raw data starts at offset 0 or inside the headers has no data of its
+// own. parsePE skips it. parsePE drops the fallback when a data section runs
+// past the end of the file, because its missing bytes may hold the lines. The
+// binary is then readable only through the data bytes that are present.
 func parsePE(data []byte, warn Warner) (*Binary, error) {
 	f, err := pe.NewFile(bytes.NewReader(data))
 	if err != nil {
@@ -697,11 +701,11 @@ func parsePE(data []byte, warn Warner) (*Binary, error) {
 			truncated = true
 		}
 
-		// Unwind data and relocated pointers are blanked, since their bytes
-		// form short lines that change with every build. Unwind data becomes
-		// NUL bytes. A pointer keeps its NUL bytes and its others become a
-		// byte that is neither NUL nor text, so it still neither ends a string
-		// nor reads as text to the end-of-string rule.
+		// Blank the unwind data and the relocated pointers. Their bytes form
+		// short lines that change with every build. Unwind data becomes NUL
+		// bytes. A pointer keeps its NUL bytes, and its other bytes become
+		// 0x01, which is neither NUL nor text. The pointer then ends no string,
+		// and the end-of-string rule does not read it as text.
 		sdata = blankRanges(sdata, s.VirtualAddress, unwind, 0)
 		sdata = blankRanges(sdata, s.VirtualAddress, pointers, 0x01)
 		rewrite := importRewrites(hints, uint64(s.VirtualAddress), len(sdata))

@@ -69,7 +69,7 @@ func elfShstrndx(f *elf.File, data []byte) int {
 
 // parseELF selects string tables (except the section name table), sections of
 // strings, a fixed set of data sections by name, and printable note
-// descriptors, in section header order.
+// descriptors. It keeps section header order.
 func parseELF(data []byte, warn Warner) (*Binary, error) {
 	f, err := elf.NewFile(bytes.NewReader(data))
 	if err != nil {
@@ -145,9 +145,9 @@ func elfNoteText(data []byte, align uint64, order binary.ByteOrder, name string,
 }
 
 // decodeWide narrows a section of 16 or 32-bit code units to one byte per
-// unit: the ASCII byte for tab to carriage return and printable ASCII, and NUL
-// for every other code point, which then separates strings. A trailing partial
-// unit is ignored.
+// unit. A tab to carriage return or a printable ASCII code point gives its
+// ASCII byte. Every other code point gives NUL, which then separates strings.
+// decodeWide ignores a trailing partial unit.
 func decodeWide(data []byte, width int, order binary.ByteOrder) []byte {
 	out := make([]byte, len(data)/width)
 

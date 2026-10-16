@@ -226,8 +226,8 @@ func (job *dedupeJob) write(root string) error {
 	return nil
 }
 
-// parseDedupeConfig parses the step list. Blank lines separate steps and comment lines are
-// ignored entirely, so they neither start nor end a step.
+// parseDedupeConfig parses the step list. Blank lines separate steps. Comment
+// lines are ignored entirely, so they neither start nor end a step.
 func parseDedupeConfig(data []byte) ([]dedupeStep, error) {
 	var steps []dedupeStep
 	var cur dedupeStep
@@ -362,7 +362,7 @@ func loadDedupeFile(root, rel string) (*dedupeFile, error) {
 	return &dedupeFile{lines: splitDedupeLines(data), mode: info.Mode().Perm()}, nil
 }
 
-// splitDedupeLines splits on \n, drops the trailing empty element and returns sorted unique lines.
+// splitDedupeLines splits on \n and drops the trailing empty element. It returns sorted unique lines.
 // The lines share one copy of data.
 func splitDedupeLines(data []byte) []string {
 	s := string(data)

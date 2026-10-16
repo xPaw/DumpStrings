@@ -16,7 +16,7 @@ type testElfSection struct {
 }
 
 // buildElf64 assembles a minimal ELF64 file with the given sections after the
-// null section; the section name table is appended last.
+// null section. It appends the section name table last.
 func buildElf64(order binary.ByteOrder, secs []testElfSection) []byte {
 	shstr := []byte{0}
 	nameOff := make([]int, len(secs))

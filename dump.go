@@ -11,8 +11,8 @@ import (
 	"slices"
 )
 
-// SectionKind tells how the bytes of a section were laid out by the toolchain,
-// which decides how a parser reads it.
+// SectionKind tells how the toolchain laid out the bytes of a section. This
+// decides how a parser reads the section.
 type SectionKind int
 
 const (
@@ -53,7 +53,7 @@ type Section struct {
 	EndRule bool
 
 	// Rewrite maps the offset of a run start to the offset the run is emitted
-	// from instead; the end of the run is unchanged.
+	// from instead. The end of the run does not change.
 	Rewrite map[int]int
 }
 
@@ -73,14 +73,14 @@ type Binary struct {
 	Sections []Section
 	Fallback []Section
 
-	// Readable is set when a selected section had bytes in the file, even
-	// if none of them are read, as with a note section whose descriptors
-	// are all binary.
+	// Readable is set when a selected section had bytes in the file. It is
+	// set even if none of them are read, as with a note section whose
+	// descriptors are all binary.
 	Readable bool
 }
 
-// add records the header of a section and, when ok, the section read from
-// it, which makes the binary readable.
+// add records the header of a section. When ok is true, it also records the
+// section read from it and makes the binary readable.
 func (b *Binary) add(h SectionHeader, s Section, ok bool) {
 	b.Headers = append(b.Headers, h)
 
@@ -295,8 +295,8 @@ func DetectFormat(data []byte) (string, error) {
 }
 
 // isFatMachO reports whether data starts with a fat Mach-O header. Java class
-// files share the magic but hold their major version (45 or more) where the
-// fat header holds the arch count.
+// files have the same magic. They hold their major version (45 or more) where
+// the fat header holds the arch count.
 func isFatMachO(data []byte) bool {
 	if len(data) < 8 || binary.BigEndian.Uint32(data) != macho.MagicFat {
 		return false
