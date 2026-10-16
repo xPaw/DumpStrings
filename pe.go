@@ -271,24 +271,27 @@ const (
 	relocDir64   = 10
 )
 
-// relocTargets adds the RVA that each HIGHLOW and DIR64 base relocation in the
-// size bytes of relocation blocks at rva points to.
-func (r *peReader) relocTargets(rva, size uint32, base uint64, out map[uint32]struct{}) {
+// relocations adds to targets the RVA that each HIGHLOW and DIR64 base
+// relocation in the size bytes of relocation blocks at rva points to, and
+// returns the RVA ranges of the addresses they patch.
+func (r *peReader) relocations(rva, size uint32, base uint64, targets map[uint32]struct{}) []peRange {
+	var sites []peRange
+
 	for size >= 8 {
 		h := r.bytes(rva, 8)
 		if h == nil {
-			return
+			return sites
 		}
 
 		page := binary.LittleEndian.Uint32(h[0:])
 		n := binary.LittleEndian.Uint32(h[4:])
 		if n < 8 || n > size {
-			return
+			return sites
 		}
 
 		entries := r.bytes(rva+8, int(n-8))
 		if entries == nil {
-			return
+			return sites
 		}
 
 		for i := 0; i+2 <= len(entries); i += 2 {
@@ -306,6 +309,8 @@ func (r *peReader) relocTargets(rva, size uint32, base uint64, out map[uint32]st
 				continue
 			}
 
+			sites = append(sites, peRange{at, at + uint32(width)})
+
 			b := r.bytes(at, width)
 			if b == nil {
 				continue
@@ -322,16 +327,18 @@ func (r *peReader) relocTargets(rva, size uint32, base uint64, out map[uint32]st
 				continue
 			}
 
-			out[uint32(v-base)] = struct{}{}
+			targets[uint32(v-base)] = struct{}{}
 		}
 
 		if rva+n < rva {
-			return
+			return sites
 		}
 
 		rva += n
 		size -= n
 	}
+
+	return sites
 }
 
 // ripTargets adds the target of every RIP-relative lea with a 64-bit operand
@@ -362,19 +369,20 @@ func ripTargets(code []byte, addr uint32, out map[uint32]struct{}) {
 
 // peReferences returns the RVAs the image refers to: the targets of its base
 // relocations and, in x86-64 images, of the RIP-relative lea instructions in
-// its executable sections.
-func peReferences(data []byte, f *pe.File, secs []peSection) map[uint32]struct{} {
-	refs := map[uint32]struct{}{}
+// its executable sections. It also returns the RVA ranges of the pointers that
+// the base relocations patch.
+func peReferences(data []byte, f *pe.File, secs []peSection) (refs map[uint32]struct{}, pointers []peRange) {
+	refs = map[uint32]struct{}{}
 	dirs, base, _ := peDirectories(f)
 
 	if len(dirs) > pe.IMAGE_DIRECTORY_ENTRY_BASERELOC {
 		r := &peReader{data: data, secs: secs}
 		d := dirs[pe.IMAGE_DIRECTORY_ENTRY_BASERELOC]
-		r.relocTargets(d.VirtualAddress, d.Size, base, refs)
+		pointers = r.relocations(d.VirtualAddress, d.Size, base, refs)
 	}
 
 	if f.Machine != pe.IMAGE_FILE_MACHINE_AMD64 {
-		return refs
+		return refs, pointers
 	}
 
 	for _, s := range f.Sections {
@@ -391,7 +399,7 @@ func peReferences(data []byte, f *pe.File, secs []peSection) map[uint32]struct{}
 		ripTargets(data[start:end], s.VirtualAddress, refs)
 	}
 
-	return refs
+	return refs, pointers
 }
 
 // Unwind info flags of x86-64 images.
@@ -508,10 +516,11 @@ func peUnwindBlanks(data []byte, f *pe.File, secs []peSection, refs map[uint32]s
 	return unwindBlanks(r.unwindInfos(d.VirtualAddress, d.Size), refs)
 }
 
-// blankRanges returns data, a section mapped at addr, with the parts of the
-// ranges inside it zero-filled. data is not modified: it is returned as is
-// when no range falls inside it, and copied otherwise.
-func blankRanges(data []byte, addr uint32, ranges []peRange) []byte {
+// blankRanges returns data, a section mapped at addr, with every byte other
+// than NUL in the parts of the ranges inside it replaced by fill. data is not
+// modified: it is returned as is when no range falls inside it, and copied
+// otherwise.
+func blankRanges(data []byte, addr uint32, ranges []peRange, fill byte) []byte {
 	var blanked []byte
 
 	end := uint64(addr) + uint64(len(data))
@@ -528,7 +537,11 @@ func blankRanges(data []byte, addr uint32, ranges []peRange) []byte {
 			blanked = bytes.Clone(data)
 		}
 
-		clear(blanked[start-uint64(addr) : stop-uint64(addr)])
+		for i := start - uint64(addr); i < stop-uint64(addr); i++ {
+			if blanked[i] != 0 {
+				blanked[i] = fill
+			}
+		}
 	}
 
 	if blanked == nil {
@@ -628,7 +641,7 @@ func parsePE(data []byte, warn Warner) (*Binary, error) {
 	}
 
 	hints := peImportHints(data, f, secs)
-	refs := peReferences(data, f, secs)
+	refs, pointers := peReferences(data, f, secs)
 	unwind := peUnwindBlanks(data, f, secs, refs)
 	truncated := false
 
@@ -684,7 +697,13 @@ func parsePE(data []byte, warn Warner) (*Binary, error) {
 			truncated = true
 		}
 
-		sdata = blankRanges(sdata, s.VirtualAddress, unwind)
+		// Unwind data and relocated pointers are blanked, since their bytes
+		// form short lines that change with every build. Unwind data becomes
+		// NUL bytes. A pointer keeps its NUL bytes and its others become a
+		// byte that is neither NUL nor text, so it still neither ends a string
+		// nor reads as text to the end-of-string rule.
+		sdata = blankRanges(sdata, s.VirtualAddress, unwind, 0)
+		sdata = blankRanges(sdata, s.VirtualAddress, pointers, 0x01)
 		rewrite := importRewrites(hints, uint64(s.VirtualAddress), len(sdata))
 		rewrite = glueRewrites(sdata, s.VirtualAddress, refs, rewrite)
 

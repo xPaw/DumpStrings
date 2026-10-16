@@ -915,13 +915,17 @@ func TestUnwindBlanks(t *testing.T) {
 
 func TestBlankRanges(t *testing.T) {
 	data := []byte("abcdefgh")
-	got := blankRanges(data, 0x1000, []peRange{{0xff0, 0x1002}, {0x1006, 0x1100}, {0x2000, 0x2001}})
+	got := blankRanges(data, 0x1000, []peRange{{0xff0, 0x1002}, {0x1006, 0x1100}, {0x2000, 0x2001}}, 0)
 
 	if want := []byte("\x00\x00cdef\x00\x00"); !bytes.Equal(got, want) || string(data) != "abcdefgh" {
 		t.Errorf("blankRanges = %q, data %q", got, data)
 	}
 
-	if got := blankRanges(data, 0x1000, []peRange{{0x2000, 0x2001}}); &got[0] != &data[0] {
+	if got := blankRanges([]byte("ab\x00d"), 0x1000, []peRange{{0x1001, 0x1004}}, 1); !bytes.Equal(got, []byte("a\x01\x00\x01")) {
+		t.Errorf("blankRanges with fill = %q", got)
+	}
+
+	if got := blankRanges(data, 0x1000, []peRange{{0x2000, 0x2001}}, 0); &got[0] != &data[0] {
 		t.Error("data copied without a range inside it")
 	}
 }
@@ -933,13 +937,53 @@ func TestRelocTargetsGarbage(t *testing.T) {
 	// A block shorter than its header, a block longer than the directory and
 	// a directory past the image add nothing.
 	binary.LittleEndian.PutUint32(r.data[0x04:], 4)
-	r.relocTargets(0, 0x10, 0, refs)
+	sites := r.relocations(0, 0x10, 0, refs)
 	binary.LittleEndian.PutUint32(r.data[0x04:], 0x20)
-	r.relocTargets(0, 0x10, 0, refs)
-	r.relocTargets(0xfffffff8, 0x10, 0, refs)
+	sites = append(sites, r.relocations(0, 0x10, 0, refs)...)
+	sites = append(sites, r.relocations(0xfffffff8, 0x10, 0, refs)...)
 
-	if len(refs) != 0 {
-		t.Errorf("refs = %x", slices.Sorted(maps.Keys(refs)))
+	if len(refs) != 0 || len(sites) != 0 {
+		t.Errorf("refs = %x, sites = %x", slices.Sorted(maps.Keys(refs)), sites)
+	}
+}
+
+func TestPERelocatedPointers(t *testing.T) {
+	le := binary.LittleEndian
+	dataRVA := peRVA(0)
+
+	// With an image base of 0x40000000, a pointer to RVA 0x363330 is the bytes
+	// "036@", which would print as a line. Its NUL bytes are kept, so the
+	// constant before the second pointer still lacks a terminator.
+	const base = 0x40000000
+	const target = 0x363330
+
+	for _, wide := range []bool{true, false} {
+		relocType := uint16(relocHighLow)
+		pointer := le.AppendUint32(nil, base+target)
+
+		if wide {
+			relocType = relocDir64
+			pointer = le.AppendUint64(nil, base+target)
+		}
+
+		data := append(pointer, "Real_String\x00IYUV"...)
+		second := len(data)
+		data = append(data, pointer...)
+		data = append(data, 0)
+
+		reloc := le.AppendUint32(nil, dataRVA)
+		reloc = le.AppendUint32(reloc, 12)
+		reloc = le.AppendUint16(reloc, relocType<<12)
+		reloc = le.AppendUint16(reloc, relocType<<12|uint16(second))
+
+		img := buildPE(wide, base, []testPESection{
+			{name: ".data", data: data},
+			{name: ".reloc", data: reloc},
+		}, map[int][2]uint32{pe.IMAGE_DIRECTORY_ENTRY_BASERELOC: {peRVA(1), uint32(len(reloc))}})
+
+		if _, lines, _ := parseAndDump(t, img, peOptions(true)); !reflect.DeepEqual(lines, []string{"Real_String"}) {
+			t.Errorf("wide %v: lines = %q", wide, lines)
+		}
 	}
 }
 
