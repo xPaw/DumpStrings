@@ -55,7 +55,7 @@ Run `DumpStrings <command> -h` for the flags of a command.
 |------|---------|-------------|
 | `-format` | `auto` | Binary format: `auto`, `pe`, `elf` or `macho` |
 | `-min-length` | `4` | Minimum length of a string to include in output |
-| `-sym-length` | `10` | Strings up to this length that are mostly non-alphanumeric are dropped |
+| `-sym-length` | `10` | Strings up to this length that are mostly non-alphanumeric are dropped. A printf conversion such as `%s` counts as alphanumeric |
 | `-demangle` | `true` | Demangle C++ symbols into their original source identifiers |
 | `-mask-protobufs` | `false` | Blank serialized protobuf descriptors (.proto file descriptors embedded by protoc) before extracting strings |
 | `-terminated` | `auto` | End-of-string rule for data sections: `auto`, `on` or `off` |

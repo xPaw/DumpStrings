@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/ianlancetaylor/demangle"
 )
@@ -179,11 +180,25 @@ func UtilEscape(str string) string {
 	return escapeReplacer.Replace(str)
 }
 
+// UtilIsMajoritySymbols reports whether at least half of the characters of str
+// are not letters or digits. Every character of a printf conversion such as
+// "%s" or "%-5.2f" counts as a letter, so short format strings are kept.
 func UtilIsMajoritySymbols(str string) bool {
 	letters := 0
 	symbols := 0
 
-	for _, char := range str {
+	for i := 0; i < len(str); {
+		if str[i] == '%' {
+			if n := printfConversionLen(str[i:]); n > 0 {
+				letters += n
+				i += n
+				continue
+			}
+		}
+
+		char, size := utf8.DecodeRuneInString(str[i:])
+		i += size
+
 		if unicode.IsLetter(char) || unicode.IsNumber(char) {
 			letters++
 		} else {
@@ -192,4 +207,52 @@ func UtilIsMajoritySymbols(str string) bool {
 	}
 
 	return symbols >= letters
+}
+
+// printfConversionLen returns the length of the printf conversion at the start
+// of s, or 0 when s does not start with one.
+func printfConversionLen(s string) int {
+	if !strings.HasPrefix(s, "%") {
+		return 0
+	}
+
+	i := 1
+
+	for i < len(s) && strings.IndexByte("-+ #0", s[i]) >= 0 {
+		i++
+	}
+
+	i = skipPrintfWidth(s, i)
+
+	if i < len(s) && s[i] == '.' {
+		i = skipPrintfWidth(s, i+1)
+	}
+
+	for i < len(s) && strings.IndexByte("hlLjztI", s[i]) >= 0 {
+		i++
+	}
+
+	if strings.HasPrefix(s[i:], "32") || strings.HasPrefix(s[i:], "64") {
+		i += 2
+	}
+
+	if i < len(s) && strings.IndexByte("diouxXeEfFgGaAcCsSpn%", s[i]) >= 0 {
+		return i + 1
+	}
+
+	return 0
+}
+
+// skipPrintfWidth returns the offset past a width or precision at s[i], which
+// is either '*' or a run of digits.
+func skipPrintfWidth(s string, i int) int {
+	if i < len(s) && s[i] == '*' {
+		return i + 1
+	}
+
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+
+	return i
 }

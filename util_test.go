@@ -144,6 +144,33 @@ func TestUtilDemangle(t *testing.T) {
 	}
 }
 
+func TestUtilIsMajoritySymbols(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{"abcd", false},
+		{"a+b-", true},
+		{"%s: %s", false},
+		{"T%d (%s)", false},
+		{"%-5.2f, %*d", false},
+		{"%I64u %lld", false},
+		{"Bool( %s )", false},
+		{"%%%sd", false},
+		{"%\",/", true},
+		{"%\x00", true},
+		{"ff&?+", true},
+		{"'=='", true},
+		{"%", true},
+	}
+
+	for _, test := range tests {
+		if got := UtilIsMajoritySymbols(test.in); got != test.want {
+			t.Errorf("UtilIsMajoritySymbols(%q) = %v, want %v", test.in, got, test.want)
+		}
+	}
+}
+
 func TestSortedUnique(t *testing.T) {
 	got := sortedUnique([]string{"b", "\xff", "a", "b", "B", ""})
 	want := []string{"", "B", "a", "b", "\xff"}
